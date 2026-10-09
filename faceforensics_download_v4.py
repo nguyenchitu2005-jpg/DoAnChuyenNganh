@@ -13,6 +13,7 @@ import time
 import sys
 import json
 import random
+import socket
 from tqdm import tqdm
 from os.path import join
 
@@ -118,20 +119,32 @@ def reporthook(count, block_size, total_size):
     sys.stdout.flush()
 
 
-def download_file(url, out_file, report_progress=False):
+def download_file(url, out_file, report_progress=False, retries=10):
     out_dir = os.path.dirname(out_file)
-    if not os.path.isfile(out_file):
+    if os.path.isfile(out_file):
+        tqdm.write('WARNING: skipping download of existing file ' + out_file)
+        return
+    for attempt in range(1, retries + 1):
         fh, out_file_tmp = tempfile.mkstemp(dir=out_dir)
         f = os.fdopen(fh, 'w')
         f.close()
-        if report_progress:
-            urllib.request.urlretrieve(url, out_file_tmp,
-                                       reporthook=reporthook)
-        else:
-            urllib.request.urlretrieve(url, out_file_tmp)
-        os.rename(out_file_tmp, out_file)
-    else:
-        tqdm.write('WARNING: skipping download of existing file ' + out_file)
+        try:
+            if report_progress:
+                urllib.request.urlretrieve(url, out_file_tmp,
+                                           reporthook=reporthook)
+            else:
+                urllib.request.urlretrieve(url, out_file_tmp)
+            os.rename(out_file_tmp, out_file)
+            return
+        except (OSError, urllib.error.URLError) as e:
+            # Server đôi khi không phản hồi: xoá file tạm, chờ rồi thử lại
+            os.remove(out_file_tmp)
+            if attempt == retries:
+                raise
+            wait = min(30 * attempt, 300)
+            tqdm.write('Retry {}/{} in {}s for {}: {}'.format(
+                attempt, retries, wait, os.path.basename(out_file), e))
+            time.sleep(wait)
 
 
 def main(args):
@@ -257,5 +270,7 @@ def main(args):
 
 
 if __name__ == "__main__":
+    # Không để một kết nối treo vô hạn
+    socket.setdefaulttimeout(120)
     args = parse_args()
     main(args)
