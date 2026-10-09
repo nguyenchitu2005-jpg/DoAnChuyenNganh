@@ -1,0 +1,15 @@
+# Python 3.12. Cài PyTorch bản CUDA trước:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+# rồi: pip install -r requirements.txt
+torch
+torchvision
+segmentation-models-pytorch
+timm
+transformers
+opencv-python
+albumentations
+scikit-learn
+numpy
+tqdm
+tensorboard
+gradio
