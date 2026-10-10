@@ -11,5 +11,6 @@ albumentations
 scikit-learn
 numpy
 tqdm
+pyyaml
 tensorboard
 gradio

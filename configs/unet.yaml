@@ -1,0 +1,17 @@
+# U-Net, encoder EfficientNet-B0 pretrained ImageNet
+name: unet_effb0
+arch: unet
+encoder: efficientnet-b0
+data_root: data/deepfakebench/FaceForensics++
+index_dir: data/index
+image_size: 256
+batch_size: 16
+epochs: 10
+lr: 0.0003
+weight_decay: 0.0001
+samples_per_epoch: null   # null = bằng số frame train (khoảng 115 nghìn)
+bce_weight: 1.0
+dice_weight: 1.0
+threshold: 0.5
+num_workers: 6
+seed: 42
