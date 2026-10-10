@@ -14,6 +14,7 @@ import sys
 import json
 import random
 import socket
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from os.path import join
 
@@ -77,6 +78,8 @@ def parse_args():
                              'changing the server.',
                         choices=SERVERS
                         )
+    parser.add_argument('-w', '--workers', type=int, default=1,
+                        help='Number of files to download in parallel.')
     args = parser.parse_args()
 
     # URLs
@@ -97,8 +100,19 @@ def parse_args():
     return args
 
 
-def download_files(filenames, base_url, output_path, report_progress=True):
+def download_files(filenames, base_url, output_path, report_progress=True,
+                   workers=1):
     os.makedirs(output_path, exist_ok=True)
+    if workers > 1:
+        # Server giới hạn tốc độ theo từng kết nối, tải song song nhanh hơn
+        with ThreadPoolExecutor(workers) as pool:
+            futures = [pool.submit(download_file, base_url + filename,
+                                   join(output_path, filename))
+                       for filename in filenames]
+            for future in tqdm(as_completed(futures), total=len(futures),
+                               disable=not report_progress):
+                future.result()
+        return
     if report_progress:
         filenames = tqdm(filenames)
     for filename in filenames:
@@ -229,7 +243,8 @@ def main(args):
                                        c_type)
             print('Output path: {}'.format(dataset_output_path))
             filelist = [filename + '.mp4' for filename in filelist]
-            download_files(filelist, dataset_videos_url, dataset_output_path)
+            download_files(filelist, dataset_videos_url, dataset_output_path,
+                           workers=args.workers)
         elif c_type == 'masks':
             dataset_output_path = join(output_path, dataset_path, c_type,
                                        'videos')
@@ -246,7 +261,8 @@ def main(args):
                 print('Masks not available for FaceShifter. Aborting.')
                 return
             filelist = [filename + '.mp4' for filename in filelist]
-            download_files(filelist, dataset_mask_url, dataset_output_path)
+            download_files(filelist, dataset_mask_url, dataset_output_path,
+                           workers=args.workers)
 
         # Else: models for deepfakes
         else:
