@@ -24,6 +24,8 @@ TARGETS = [
     ('DFD c23', FF + '/DeepFakeDetection/c23/videos', 3068),
     ('DFD original c23', 'original_sequences/actors/c23/videos', 363),
 ]
+DFB_ZIP = os.path.join('data', 'deepfakebench', 'FaceForensics++.zip')
+DFB_ZIP_SIZE = 22605478577  # bytes, từ Content-Range của Google Drive
 BAR_WIDTH = 30
 REFRESH_SECONDS = 3
 
@@ -61,6 +63,14 @@ def render(history):
     lines.append('{:<17} [{}] {:>4}/{:<4} {:>5.1f}%  {:.2f} GB'.format(
         'TONG', bar(total_done, grand_total), total_done, grand_total,
         100 * total_done / grand_total, total_size / 1024 ** 3))
+
+    zip_have = os.path.getsize(DFB_ZIP) if os.path.isfile(DFB_ZIP) else 0
+    lines.append('')
+    lines.append('{:<17} [{}] {:>5.1f}/{:.1f} GB {:>5.1f}%  {}'.format(
+        'DeepfakeBench zip', bar(zip_have, DFB_ZIP_SIZE), zip_have / 1e9,
+        DFB_ZIP_SIZE / 1e9, 100 * zip_have / DFB_ZIP_SIZE,
+        'XONG' if zip_have >= DFB_ZIP_SIZE else
+        ('dang tai' if zip_have else 'cho')))
 
     # Ước lượng tốc độ và thời gian còn lại từ ~1 phút gần nhất
     now = time.time()
