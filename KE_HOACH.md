@@ -36,6 +36,7 @@ Chỉ dùng dữ liệu tải từ server TUM bằng script chính thức của 
 | Mask 4 phương pháp | 4 × 1000 | 44 MB / 14 GB / 15 GB / 12 GB | Nhãn pixel |
 | DFD giả c23 + mask | 3068 + 3068 | 20 GB + 3,9 GB | Kiểm tra chéo |
 | DFD thật (actors) c23 | 363 | 2,8 GB | Đo báo nhầm khi kiểm tra chéo |
+| Bản **c40** (nén mạnh) của original, 4 phương pháp, DFD giả và thật | 5000 + 3068 + 363 | (đang tải) | Test độ bền với video nén mạnh. Dùng chung mask c23 vì cùng frame |
 
 - **Chia tập:** dùng split chính thức của FF++ (`data/splits/{train,val,test}.json`), gồm 360/70/70 cặp, tức 720/140/140 video gốc. Mỗi cặp `[a, b]` cho ra 2 video gốc và 2 video giả mỗi phương pháp (`a_b`, `b_a`). Như vậy một người chỉ xuất hiện trong một tập, không chia ngẫu nhiên theo frame.
 - **DFD** không dùng để train, chỉ dùng để đo khả năng tổng quát.
@@ -93,7 +94,7 @@ Cả ba dùng cùng dữ liệu, ảnh 256×256, loss, số epoch và cách ch�
 Báo cáo các bảng sau:
 1. FF++ test, từng phương pháp.
 2. DFD (kiểm tra chéo).
-3. Độ bền: test lại trên ảnh bị nén JPEG nhiều mức, blur và noise.
+3. Độ bền: mô hình train trên c23, test trên **c40** (cắt mặt bằng cùng `preprocess.py`, dùng mask c23), và trên ảnh c23 bị nén JPEG nhiều mức, blur, noise.
 
 ## 7. Lệnh chạy
 
@@ -128,7 +129,7 @@ tensorboard --logdir runs
 | 4 | 02/11 – 08/11 | Đánh giá U-Net: FF++ test từng phương pháp, DFD, tỉ lệ báo nhầm | Bảng kết quả U-Net |
 | 5 | 09/11 – 15/11 | Train DeepLabV3+ cùng cấu hình | Trọng số DeepLabV3+ |
 | 6 | 16/11 – 22/11 | Đánh giá như tuần 4 | Bảng kết quả DeepLabV3+ |
-| 7 | 23/11 – 29/11 | Test độ bền JPEG/blur/noise cho 2 mô hình; dự phòng trễ | Bảng độ bền |
+| 7 | 23/11 – 29/11 | Test độ bền trên c40 và JPEG/blur/noise cho 2 mô hình; dự phòng trễ | Bảng độ bền |
 | 8 | 30/11 – 06/12 | Giữa kỳ: so sánh U-Net và DeepLabV3+, trình bày tiến độ | Báo cáo giữa kỳ |
 | 9 | 07/12 – 13/12 | Train SegFormer-B0 | Trọng số SegFormer |
 | 10 | 14/12 – 20/12 | Đánh giá SegFormer, kể cả độ bền | Bảng kết quả SegFormer |
@@ -144,6 +145,7 @@ Nếu chậm tiến độ: dùng tuần 7 để bù trước. Nếu vẫn trễ 
 
 - [x] Môi trường: Python 3.12 (`.venv`), PyTorch 2.14 CUDA 13.0, segmentation_models_pytorch, transformers, albumentations, batch-face
 - [x] Tải toàn bộ dữ liệu TUM: 5.000 video c23 FF++, mask 4 phương pháp, DFD giả/thật và mask (75 GB)
+- [ ] Tải bản c40 để test độ bền (đang tải)
 - [x] Split chính thức FF++ (`data/splits/`)
 - [x] Viết `preprocess.py`, thử trên 21 video
 - [ ] Tiền xử lý toàn bộ 8.431 video (đang chạy)

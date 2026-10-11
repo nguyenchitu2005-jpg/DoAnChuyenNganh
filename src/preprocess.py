@@ -11,6 +11,7 @@ là ảnh xám có bóng đổ, ngưỡng 127 làm mất 10 đến 20% vùng gi�
 
 Kết quả: data/faces/<nhóm>/{frames,masks}/<video>/<chỉ số frame>.png
 Nhật ký từng video: data/faces/log.jsonl
+Bản c40 (test độ bền, dùng chung mask): python src/preprocess.py --compression c40 --out data/faces_c40
 """
 import argparse
 import glob
@@ -25,12 +26,12 @@ from tqdm import tqdm
 MASK_THRESHOLD = 10
 DETECT_MAX_SIDE = 960   # phát hiện mặt trên ảnh thu nhỏ, rồi đổi khung về ảnh gốc
 SCORE_THRESHOLD = 0.9
-# (nhóm đầu ra, thư mục video, có mask không)
+# (nhóm, có mask không); video ở <nhóm>/<mức nén>/videos, mask ở <nhóm>/masks/videos
 GROUPS = [
-    ('original_sequences/youtube', 'original_sequences/youtube/c23/videos', False),
-    ('original_sequences/actors', 'original_sequences/actors/c23/videos', False),
+    ('original_sequences/youtube', False),
+    ('original_sequences/actors', False),
 ] + [
-    ('manipulated_sequences/' + m, 'manipulated_sequences/{}/c23/videos'.format(m), True)
+    ('manipulated_sequences/' + m, True)
     for m in ['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures',
               'DeepFakeDetection']
 ]
@@ -150,6 +151,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--src', default='data/FaceForensics')
     parser.add_argument('--out', default='data/faces')
+    parser.add_argument('--compression', default='c23', choices=['c23', 'c40'])
     parser.add_argument('--frames', type=int, default=32)
     parser.add_argument('--scale', type=float, default=1.3)
     parser.add_argument('--size', type=int, default=256)
@@ -167,17 +169,17 @@ def main():
             done = {(r['group'], r['video']) for r in map(json.loads, f)}
 
     tasks = []
-    for group, video_dir, has_mask in GROUPS:
-        videos = sorted(glob.glob(os.path.join(args.src, video_dir, '*.mp4')))
+    for group, has_mask in GROUPS:
+        videos = sorted(glob.glob(os.path.join(
+            args.src, group, args.compression, 'videos', '*.mp4')))
         if args.limit:
             videos = videos[:args.limit]
         for v in videos:
             name = os.path.splitext(os.path.basename(v))[0]
             if (group, name) in done:
                 continue
-            mask = v.replace(os.sep + 'c23' + os.sep + 'videos',
-                             os.sep + 'masks' + os.sep + 'videos') \
-                .replace('/c23/videos', '/masks/videos') if has_mask else None
+            mask = os.path.join(args.src, group, 'masks', 'videos',
+                                name + '.mp4') if has_mask else None
             if has_mask and not os.path.isfile(mask):
                 print('no mask video, skipped:', v)
                 continue
