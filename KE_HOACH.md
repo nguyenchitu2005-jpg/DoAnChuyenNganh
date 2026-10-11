@@ -23,7 +23,7 @@ Hình dạng mask khác nhau theo phương pháp giả, nên khi phân tích k�
 | NeuralTextures | Tái hiện biểu cảm (neural rendering) | Ảnh render xám, phủ gần cả mặt |
 | DFD | Thay mặt (Google) | Gần chữ nhật quanh mặt |
 
-Trên khung hình gốc, vùng giả chỉ chiếm khoảng 1–9% diện tích (đo trên 8 video mỗi loại). Sau khi cắt mặt, tỉ lệ này tăng lên. Con số thực tế sẽ được đo sau khi tiền xử lý xong.
+Trên khung hình gốc, vùng giả chỉ chiếm khoảng 1–9% diện tích (đo trên 8 video mỗi loại). Sau khi cắt mặt, tỉ lệ vùng giả trung bình là **24%** ở Deepfakes và khoảng **32%** ở Face2Face, FaceSwap, NeuralTextures (đo trên 400 frame train mỗi loại). Như vậy, ngay cả trên ảnh giả, phần lớn pixel vẫn là pixel thật.
 
 ## 2. Dữ liệu
 
@@ -39,6 +39,15 @@ Chỉ dùng dữ liệu tải từ server TUM bằng script chính thức của 
 | Bản **c40** (nén mạnh) của original, 4 phương pháp, DFD giả và thật | 5000 + 3068 + 363 | (đang tải) | Test độ bền với video nén mạnh. Dùng chung mask c23 vì cùng frame |
 
 - **Chia tập:** dùng split chính thức của FF++ (`data/splits/{train,val,test}.json`), gồm 360/70/70 cặp, tức 720/140/140 video gốc. Mỗi cặp `[a, b]` cho ra 2 video gốc và 2 video giả mỗi phương pháp (`a_b`, `b_a`). Như vậy một người chỉ xuất hiện trong một tập, không chia ngẫu nhiên theo frame.
+- Số frame sau tiền xử lý (`data/index/*.csv`):
+
+  | Tập | Frame thật | Frame giả | Ghi chú |
+  | --- | --- | --- | --- |
+  | Train | 23.039 | 92.084 | 720 video mỗi nhóm |
+  | Val | 4.480 | 17.851 | Bỏ Face2Face/NeuralTextures `115_939` (mask lệch) |
+  | Test | 4.480 | 17.849 | Bỏ Face2Face/NeuralTextures `227_169` (mask lệch) |
+  | DFD | 11.047 | 97.083 | 3068 video giả, 363 video thật |
+
 - **DFD** không dùng để train, chỉ dùng để đo khả năng tổng quát.
 - **FaceShifter** không có mask nên không dùng.
 - Mỗi video gốc có 4 video giả tương ứng, nên khoảng 80% frame là giả. Vì vậy khi train cần lấy mẫu cân bằng (mục 4).
@@ -55,7 +64,15 @@ Chỉ dùng dữ liệu tải từ server TUM bằng script chính thức của 
 | 6. Resize | 256×256. Ảnh dùng INTER_AREA khi thu nhỏ, INTER_LINEAR khi phóng to. Mask dùng INTER_NEAREST để biên không bị nhoè |
 | 7. Lưu | PNG (không thêm nhiễu nén) vào `data/faces/<nhóm>/{frames,masks}/<video>/<chỉ số frame>.png`. Nhật ký mỗi video ghi vào `data/faces/log.jsonl` |
 
-Chạy thử trên 21 video: khung cắt và mask khớp nhau. Toàn bộ 8.431 video mất khoảng 3 tiếng (3 tiến trình trên RTX 3050).
+Kết quả trên c23: 8.431 video cho khoảng 268 nghìn cặp ảnh và mask, chạy khoảng 3,5 tiếng (3 tiến trình trên RTX 3050). Số frame không tìm thấy mặt: FF++ dưới 0,02%; DFD giả 0,7%; DFD thật 4,9% (cảnh đi bộ, người ở xa hoặc quay lưng).
+
+Lỗi trong mask chính thức đã phát hiện và xử lý:
+
+| Vấn đề | Video | Xử lý |
+| --- | --- | --- |
+| Mask nằm lệch khỏi mặt (trên phông nền), trọn video | Face2Face và NeuralTextures của `115_939` (val) và `227_169` (test) | `build_index.py` bỏ mọi frame giả có mask trống: train 66, val 65, test 71, DFD 40 frame |
+| Mask trống ở vài frame lẻ | Khoảng 27 video FaceSwap (1–5 frame, riêng `604_703` có 25 frame), 40 video DFD (1 frame, chủ yếu cảnh `kitchen_pan` và đi bộ), Deepfakes `024_073` (1 frame) | Như trên |
+| Mask ngắn hơn video (khớp từ frame đầu) | 118/3068 video DFD | Chỉ lấy 32 frame trong đoạn có mask |
 
 ## 4. Pipeline huấn luyện
 
@@ -141,16 +158,17 @@ tensorboard --logdir runs
 
 Nếu chậm tiến độ: dùng tuần 7 để bù trước. Nếu vẫn trễ thì bỏ SegFormer và so sánh 2 kiến trúc CNN. Phần train có thể chuyển lên Kaggle (GPU T4/P100) để nhanh hơn.
 
-## 9. Tình trạng (11/10/2026)
+## 9. Tình trạng (cập nhật 11/10/2026 tối)
 
 - [x] Môi trường: Python 3.12 (`.venv`), PyTorch 2.14 CUDA 13.0, segmentation_models_pytorch, transformers, albumentations, batch-face
 - [x] Tải toàn bộ dữ liệu TUM: 5.000 video c23 FF++, mask 4 phương pháp, DFD giả/thật và mask (75 GB)
-- [ ] Tải bản c40 để test độ bền (đang tải)
+- [x] Tải bản c40 để test độ bền (5000 + 3068 + 363 video, khoảng 4,3 GB)
 - [x] Split chính thức FF++ (`data/splits/`)
 - [x] Viết `preprocess.py`, thử trên 21 video
-- [ ] Tiền xử lý toàn bộ 8.431 video (đang chạy)
+- [x] Tiền xử lý toàn bộ 8.431 video c23 (`data/faces/`)
+- [ ] Tiền xử lý bản c40 (`data/faces_c40/`, đang chạy)
 - [x] Viết `build_index.py`, `dataset.py`, `metrics.py`, `models.py`, `train.py`, `evaluate.py`, `check_data.py`, 3 file config
-- [ ] Chạy `build_index.py` và `check_data.py` trên dữ liệu mới, đo tỉ lệ vùng giả sau khi cắt
+- [x] Chạy `build_index.py` và `check_data.py` trên dữ liệu mới, đo tỉ lệ vùng giả sau khi cắt
 - [ ] Chạy thử U-Net trên 5% dữ liệu mới
 - [ ] Train và đánh giá U-Net, DeepLabV3+, SegFormer-B0
 - [ ] Test độ bền, phân tích, demo, báo cáo
