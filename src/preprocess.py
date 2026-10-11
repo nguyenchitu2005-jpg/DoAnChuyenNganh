@@ -51,7 +51,12 @@ def read_frames(video_path, mask_path, n_frames):
     cap = cv2.VideoCapture(video_path)
     mcap = cv2.VideoCapture(mask_path) if mask_path else None
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    wanted = set(np.linspace(0, max(total - 1, 0), n_frames).round().astype(int))
+    usable = total
+    if mcap is not None:
+        # 118 video DFD có mask ngắn hơn video (mask khớp từ frame đầu), nên chỉ
+        # lấy frame trong đoạn có mask
+        usable = min(total, int(mcap.get(cv2.CAP_PROP_FRAME_COUNT)))
+    wanted = set(np.linspace(0, max(usable - 1, 0), n_frames).round().astype(int))
     frames, masks, idx = [], [], []
     for i in range(max(wanted) + 1):
         if not cap.grab() or (mcap is not None and not mcap.grab()):
