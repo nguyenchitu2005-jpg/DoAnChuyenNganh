@@ -33,13 +33,28 @@ def run_eval(model, loader, device, threshold=0.5, max_batches=None,
     return metrics.summary()
 
 
-def eval_loader(cfg, split, fraction=1.0):
+def eval_loader(cfg, split, fraction=1.0, degrade=None):
     ds = FaceSegDataset(os.path.join(cfg['index_dir'], split + '.csv'),
-                        cfg['data_root'], eval_transform(cfg['image_size']),
+                        cfg['data_root'],
+                        eval_transform(cfg['image_size'], degrade=degrade),
                         fraction=fraction)
     return DataLoader(ds, batch_size=cfg['batch_size'] * 2, shuffle=False,
                       num_workers=cfg['num_workers'], pin_memory=True,
                       persistent_workers=cfg['num_workers'] > 0)
+
+
+def load_checkpoint(path, compression='c23', device=None):
+    """Mô hình đã nạp trọng số, cfg (đổi thư mục dữ liệu nếu c40) và checkpoint."""
+    ckpt = torch.load(path, map_location='cpu', weights_only=False)
+    cfg = ckpt['cfg']
+    if compression != 'c23':
+        cfg = dict(cfg, data_root='data/faces_' + compression,
+                   index_dir='data/index_' + compression)
+    device = device or torch.device('cuda' if torch.cuda.is_available()
+                                    else 'cpu')
+    model = build_model(cfg['arch'], cfg['encoder'], pretrained=False)
+    model.load_state_dict(ckpt['model'])
+    return model.to(device).eval(), cfg, ckpt, device
 
 
 def main():
@@ -53,17 +68,10 @@ def main():
                         help='c40: test độ bền trên data/faces_c40, data/index_c40.')
     args = parser.parse_args()
 
-    ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
-    cfg = ckpt['cfg']
+    model, cfg, ckpt, device = load_checkpoint(args.checkpoint, args.compression)
     tag = args.split
     if args.compression != 'c23':
-        cfg = dict(cfg, data_root='data/faces_' + args.compression,
-                   index_dir='data/index_' + args.compression)
         tag = '{}_{}'.format(args.split, args.compression)
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = build_model(cfg['arch'], cfg['encoder'], pretrained=False)
-    model.load_state_dict(ckpt['model'])
-    model.to(device)
 
     summary = run_eval(model, eval_loader(cfg, args.split, args.fraction),
                        device, cfg['threshold'], desc=tag)

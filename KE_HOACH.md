@@ -135,7 +135,15 @@ tensorboard --logdir runs
 .venv\Scripts\python src/evaluate.py runs/unet_effb0/best.pt --split test
 .venv\Scripts\python src/evaluate.py runs/unet_effb0/best.pt --split dfd
 .venv\Scripts\python src/evaluate.py runs/unet_effb0/best.pt --split test --compression c40
+
+# 6. Độ bền JPEG/blur/noise (bảng + biểu đồ trong runs/<run>/robustness/)
+.venv\Scripts\python src/robustness.py runs/unet_effb0/best.pt
+
+# 7. Hình minh hoạ mask dự đoán và mask thật (runs/<run>/figures/)
+.venv\Scripts\python src/visualize.py runs/unet_effb0/best.pt --split test --mode random
+.venv\Scripts\python src/visualize.py runs/unet_effb0/best.pt --split test --mode worst
 ```
+Khi GPU đang bận train, thêm `--cpu` vào lệnh 6 và 7 (chậm hơn nhiều, nên dùng kèm `--fraction`).
 
 ## 8. Lịch thực hiện
 
@@ -198,7 +206,8 @@ Nhận xét:
 - [x] Chạy thử U-Net trên 5% dữ liệu mới
 - [x] Train và đánh giá U-Net (test c23, c40, DFD)
 - [ ] Train và đánh giá DeepLabV3+, SegFormer-B0
-- [ ] Test độ bền JPEG/blur/noise (chưa có code)
+- [x] Viết `robustness.py` (JPEG 90–10, blur kernel 3–21, noise 0,02–0,15) và `visualize.py` (ngẫu nhiên, ca sai nhiều nhất)
+- [ ] Chạy `robustness.py` và `visualize.py` đầy đủ cho từng mô hình
 - [ ] Test độ bền, phân tích, demo, báo cáo
 
 ## 11. Rủi ro và lưu ý

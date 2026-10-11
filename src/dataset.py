@@ -35,8 +35,30 @@ def train_transform(size=256, normalize=True):
     return A.Compose(steps + _to_tensor(normalize))
 
 
-def eval_transform(size=256, normalize=True):
-    return A.Compose([A.Resize(size, size)] + _to_tensor(normalize))
+def eval_transform(size=256, normalize=True, degrade=None):
+    """`degrade`: làm hỏng ảnh test để đo độ bền, dạng 'jpeg:<chất lượng>',
+    'blur:<kích thước kernel lẻ>' hoặc 'noise:<độ lệch chuẩn, 0-1>'. Chỉ áp cho ảnh."""
+    return A.Compose([A.Resize(size, size)] + _degrade(degrade)
+                     + _to_tensor(normalize))
+
+
+def _degrade(spec):
+    if not spec:
+        return []
+    kind, value = spec.split(':')
+    if kind == 'jpeg':
+        q = int(value)
+        return [A.ImageCompression(quality_range=(q, q), p=1)]
+    if kind == 'blur':
+        k = int(value)
+        # sigma cố định theo kernel (công thức mặc định của OpenCV), để mức blur
+        # tăng đều theo k thay vì ngẫu nhiên
+        sigma = 0.3 * ((k - 1) * 0.5 - 1) + 0.8
+        return [A.GaussianBlur(blur_limit=(k, k), sigma_limit=(sigma, sigma), p=1)]
+    if kind == 'noise':
+        s = float(value)
+        return [A.GaussNoise(std_range=(s, s), p=1)]
+    raise ValueError('unknown degradation: ' + spec)
 
 
 def _to_tensor(normalize):
