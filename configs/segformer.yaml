@@ -2,7 +2,7 @@
 name: segformer_b0
 arch: segformer
 encoder: nvidia/mit-b0
-data_root: data/deepfakebench/FaceForensics++
+data_root: data/faces
 index_dir: data/index
 image_size: 256
 batch_size: 16

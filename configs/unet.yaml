@@ -2,7 +2,7 @@
 name: unet_effb0
 arch: unet
 encoder: efficientnet-b0
-data_root: data/deepfakebench/FaceForensics++
+data_root: data/faces
 index_dir: data/index
 image_size: 256
 batch_size: 16

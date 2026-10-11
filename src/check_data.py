@@ -22,7 +22,7 @@ def overlay(image, mask):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('--root', default='data/deepfakebench/FaceForensics++')
+    parser.add_argument('--root', default='data/faces')
     parser.add_argument('--csv', default='data/index/train.csv')
     parser.add_argument('--n', type=int, default=200)
     parser.add_argument('--out', default='runs/check_data')

@@ -1,4 +1,4 @@
-"""Lập danh sách cặp frame/mask từ dữ liệu DeepfakeBench, chia theo split chính thức của FF++.
+"""Lập danh sách cặp frame/mask từ ảnh mặt đã cắt (src/preprocess.py), chia theo split chính thức của FF++.
 
 Chạy: python src/build_index.py
 Kết quả: data/index/{train,val,test,dfd}.csv, mỗi dòng là một frame:
@@ -16,7 +16,7 @@ FIELDS = ['frame', 'mask', 'method', 'video', 'label']
 
 def video_rows(root, seq, method, video, label):
     """Mọi frame của một video; frame giả kèm mask cùng tên."""
-    base = seq + '/c23'
+    base = seq
     frame_dir = os.path.join(root, base, 'frames', video)
     if not os.path.isdir(frame_dir):
         return [], 0
@@ -55,7 +55,7 @@ def dfd_rows(root):
     for seq, method, label in [
             ('manipulated_sequences/DeepFakeDetection', 'DFD', 1),
             ('original_sequences/actors', 'actors', 0)]:
-        frame_root = os.path.join(root, seq, 'c23', 'frames')
+        frame_root = os.path.join(root, seq, 'frames')
         for video in sorted(os.listdir(frame_root)):
             r, miss = video_rows(root, seq, method, video, label)
             if not r:
@@ -90,13 +90,14 @@ def summarize(name, rows, missing, absent):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('--root', default='data/deepfakebench/FaceForensics++')
+    parser.add_argument('--root', default='data/faces')
+    parser.add_argument('--splits', default='data/splits')
     parser.add_argument('--out', default='data/index')
     args = parser.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
     for split in ('train', 'val', 'test'):
-        with open(os.path.join(args.root, split + '.json')) as f:
+        with open(os.path.join(args.splits, split + '.json')) as f:
             pairs = json.load(f)
         rows, missing, absent = ff_split_rows(args.root, pairs)
         write_csv(os.path.join(args.out, split + '.csv'), rows)

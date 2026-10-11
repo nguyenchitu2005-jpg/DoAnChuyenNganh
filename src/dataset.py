@@ -1,4 +1,4 @@
-"""Dataset PyTorch cho segmentation vùng giả mạo trên ảnh mặt DeepfakeBench."""
+"""Dataset PyTorch cho segmentation vùng giả mạo trên ảnh mặt đã cắt (src/preprocess.py)."""
 import csv
 import os
 import random
@@ -14,7 +14,7 @@ METHODS = ['original', 'Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures',
            'DFD', 'actors']
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
-MASK_THRESHOLD = 127  # mask FaceSwap có vài mức xám ở viền
+MASK_THRESHOLD = 127  # mask đã nhị phân 0/255 lúc tiền xử lý
 
 
 def train_transform(size=256, normalize=True):

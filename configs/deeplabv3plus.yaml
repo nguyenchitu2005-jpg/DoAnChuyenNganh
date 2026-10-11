@@ -2,7 +2,7 @@
 name: deeplabv3plus_effb0
 arch: deeplabv3plus
 encoder: efficientnet-b0
-data_root: data/deepfakebench/FaceForensics++
+data_root: data/faces
 index_dir: data/index
 image_size: 256
 batch_size: 16

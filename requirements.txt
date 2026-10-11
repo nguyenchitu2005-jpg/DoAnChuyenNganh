@@ -8,6 +8,7 @@ timm
 transformers
 opencv-python
 albumentations
+batch-face
 scikit-learn
 numpy
 tqdm
