@@ -4,18 +4,24 @@ Chạy: python src/build_index.py
 Kết quả: data/index/{train,val,test,dfd}.csv, mỗi dòng là một frame:
     frame, mask (rỗng với frame thật), method, video, label (0 thật, 1 giả)
 Đường dẫn trong CSV là đường dẫn tương đối so với thư mục dữ liệu.
+Frame giả có mask trống bị bỏ: mask chính thức của vài video FF++ nằm lệch khỏi
+khuôn mặt (ví dụ Face2Face 115_939, mask nằm trên phông nền), giữ lại sẽ dạy mô hình
+rằng mặt giả không có vùng giả.
 """
 import argparse
 import csv
 import json
 import os
 
+import cv2
+
 FF_FAKE = ['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures']
 FIELDS = ['frame', 'mask', 'method', 'video', 'label']
 
 
 def video_rows(root, seq, method, video, label):
-    """Mọi frame của một video; frame giả kèm mask cùng tên."""
+    """Mọi frame của một video; frame giả kèm mask cùng tên, bỏ frame giả không có mask
+    hoặc mask trống. Trả về (các dòng, số frame bị bỏ)."""
     base = seq
     frame_dir = os.path.join(root, base, 'frames', video)
     if not os.path.isdir(frame_dir):
@@ -25,7 +31,8 @@ def video_rows(root, seq, method, video, label):
         mask = ''
         if label:
             mask = '{}/masks/{}/{}'.format(base, video, name)
-            if not os.path.isfile(os.path.join(root, mask)):
+            m = cv2.imread(os.path.join(root, mask), cv2.IMREAD_GRAYSCALE)
+            if m is None or not m.any():
                 missing += 1
                 continue
         rows.append({'frame': '{}/frames/{}/{}'.format(base, video, name),
@@ -79,7 +86,7 @@ def summarize(name, rows, missing, absent):
         c[0].add(r['video'])
         c[1] += 1
     real = sum(1 for r in rows if not r['label'])
-    print('{}: {} frames ({} real, {} fake), {} frames without mask skipped, '
+    print('{}: {} frames ({} real, {} fake), {} fake frames with missing/empty mask skipped, '
           '{} videos absent'.format(name, len(rows), real, len(rows) - real,
                                     missing, len(absent)))
     for m, (videos, n) in counts.items():
