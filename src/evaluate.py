@@ -1,7 +1,8 @@
 """Đánh giá một checkpoint trên val, test (FF++) hoặc dfd (kiểm tra chéo).
 
 Chạy: python src/evaluate.py runs/unet_effb0/best.pt --split test
-Kết quả in ra bảng theo từng phương pháp và lưu vào <thư mục run>/eval_<split>.json
+Độ bền: python src/evaluate.py runs/unet_effb0/best.pt --split test --compression c40
+Kết quả in ra bảng theo từng phương pháp và lưu vào <thư mục run>/eval_<split>[_c40].json
 """
 import argparse
 import json
@@ -48,23 +49,31 @@ def main():
                         choices=['val', 'test', 'dfd'])
     parser.add_argument('--fraction', type=float, default=1.0,
                         help='Chỉ đánh giá một phần video (để chạy thử).')
+    parser.add_argument('--compression', default='c23', choices=['c23', 'c40'],
+                        help='c40: test độ bền trên data/faces_c40, data/index_c40.')
     args = parser.parse_args()
 
     ckpt = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
     cfg = ckpt['cfg']
+    tag = args.split
+    if args.compression != 'c23':
+        cfg = dict(cfg, data_root='data/faces_' + args.compression,
+                   index_dir='data/index_' + args.compression)
+        tag = '{}_{}'.format(args.split, args.compression)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = build_model(cfg['arch'], cfg['encoder'], pretrained=False)
     model.load_state_dict(ckpt['model'])
     model.to(device)
 
     summary = run_eval(model, eval_loader(cfg, args.split, args.fraction),
-                       device, cfg['threshold'], desc=args.split)
-    print('{} (epoch {}) on {}:'.format(cfg['name'], ckpt['epoch'], args.split))
+                       device, cfg['threshold'], desc=tag)
+    print('{} (epoch {}) on {}:'.format(cfg['name'], ckpt['epoch'], tag))
     print(format_table(summary))
     out = os.path.join(os.path.dirname(args.checkpoint),
-                       'eval_{}.json'.format(args.split))
+                       'eval_{}.json'.format(tag))
     with open(out, 'w', encoding='utf-8') as f:
         json.dump({'epoch': ckpt['epoch'], 'split': args.split,
+                   'compression': args.compression,
                    'fraction': args.fraction, 'metrics': summary}, f, indent=2)
     print('saved', out)
 
