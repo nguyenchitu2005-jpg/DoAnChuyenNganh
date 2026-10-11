@@ -96,7 +96,7 @@ Không chọn checkpoint chỉ theo IoU. Lần chạy thử (1 epoch, 5% dữ li
 | DeepLabV3+ | Tích chập giãn (ASPP) nắm bối cảnh nhiều tỉ lệ | EfficientNet-B0 | 4,9M | 3e-4 |
 | SegFormer-B0 | Transformer nhẹ, quan hệ toàn cục giữa các vùng | MiT-B0 (`nvidia/mit-b0`) | 3,7M | 1e-4 |
 
-Cả ba dùng cùng dữ liệu, ảnh 256×256, loss, số epoch và cách chọn checkpoint, để so sánh công bằng. Cấu hình nằm trong `configs/{unet,deeplabv3plus,segformer}.yaml`. Ước tính dựa trên lần chạy thử (dữ liệu cùng kích thước): mỗi epoch khoảng 32 phút, 10 epoch khoảng 5,5–6 tiếng mỗi mô hình. Chạy ở 224×224 batch 8 chỉ tốn 0,66 GB VRAM.
+Cả ba dùng cùng dữ liệu, ảnh 256×256, loss, số epoch và cách chọn checkpoint, để so sánh công bằng. Cấu hình nằm trong `configs/{unet,deeplabv3plus,segformer}.yaml`. Thời gian thực tế: U-Net mất khoảng 18 phút mỗi epoch, 10 epoch khoảng 3 tiếng trên RTX 3050 4 GB.
 
 ## 6. Đánh giá ở mức pixel (`src/metrics.py`)
 
@@ -134,6 +134,7 @@ tensorboard --logdir runs
 # 5. Đánh giá
 .venv\Scripts\python src/evaluate.py runs/unet_effb0/best.pt --split test
 .venv\Scripts\python src/evaluate.py runs/unet_effb0/best.pt --split dfd
+.venv\Scripts\python src/evaluate.py runs/unet_effb0/best.pt --split test --compression c40
 ```
 
 ## 8. Lịch thực hiện
@@ -158,7 +159,32 @@ tensorboard --logdir runs
 
 Nếu chậm tiến độ: dùng tuần 7 để bù trước. Nếu vẫn trễ thì bỏ SegFormer và so sánh 2 kiến trúc CNN. Phần train có thể chuyển lên Kaggle (GPU T4/P100) để nhanh hơn.
 
-## 9. Tình trạng (cập nhật 11/10/2026 tối)
+## 9. Kết quả
+
+### U-Net EfficientNet-B0 (train c23, 10 epoch, `best.pt` là epoch 8)
+
+Trên val, tỉ lệ báo nhầm giảm từ 27,9% (epoch 1) xuống khoảng 8%, còn IoU ảnh giả tăng từ 0,898 lên 0,926. Các epoch 6–10 gần như không đổi.
+
+| Tập test | IoU | Dice | Precision | Recall | F1 | Pixel-AUC | Báo nhầm (mặt thật) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| FF++ c23, Deepfakes | 0,923 | 0,955 | 0,966 | 0,954 | 0,960 | 0,998 | |
+| FF++ c23, Face2Face | 0,932 | 0,952 | 0,982 | 0,950 | 0,966 | 0,998 | |
+| FF++ c23, FaceSwap | 0,930 | 0,954 | 0,974 | 0,957 | 0,965 | 0,997 | |
+| FF++ c23, NeuralTextures | 0,860 | 0,886 | 0,976 | 0,880 | 0,925 | 0,993 | |
+| **FF++ c23, tất cả** | **0,911** | **0,937** | 0,975 | 0,934 | 0,954 | 0,996 | **6,0%** |
+| FF++ c40, Deepfakes | 0,798 | 0,840 | 0,945 | 0,842 | 0,891 | 0,988 | |
+| FF++ c40, Face2Face | 0,513 | 0,542 | 0,973 | 0,533 | 0,689 | 0,973 | |
+| FF++ c40, FaceSwap | 0,779 | 0,814 | 0,962 | 0,810 | 0,880 | 0,987 | |
+| FF++ c40, NeuralTextures | 0,332 | 0,354 | 0,970 | 0,342 | 0,505 | 0,961 | |
+| **FF++ c40, tất cả** | **0,606** | **0,638** | 0,961 | 0,617 | 0,752 | 0,972 | **14,5%** |
+| **DFD (kiểm tra chéo)** | **0,560** | **0,643** | 0,737 | 0,749 | 0,743 | 0,951 | **20,4%** |
+
+Nhận xét:
+- **Trên c23**, mô hình định vị vùng giả tốt (IoU 0,91) và ít tô nhầm mặt thật (6%). NeuralTextures khó nhất: phương pháp này chỉ sửa tinh vi vùng biểu cảm.
+- **Trên c40**, precision vẫn khoảng 0,96 nhưng recall giảm mạnh. Chỗ nào mô hình tô thì vẫn đúng, nhưng nó bỏ sót nhiều vùng giả. Face2Face và NeuralTextures giảm nhiều nhất (IoU 0,51 và 0,33): dấu vết chỉnh biểu cảm bị nén xoá mất.
+- **Trên DFD**, cả precision và recall đều khoảng 0,74, và báo nhầm tăng lên 20%. Mô hình train trên FF++ tổng quát chưa tốt sang deepfake của Google. Một phần nguyên nhân là mask DFD (gần chữ nhật) khác hình dạng mask của phần lớn FF++.
+
+## 10. Tình trạng (cập nhật 12/10/2026)
 
 - [x] Môi trường: Python 3.12 (`.venv`), PyTorch 2.14 CUDA 13.0, segmentation_models_pytorch, transformers, albumentations, batch-face
 - [x] Tải toàn bộ dữ liệu TUM: 5.000 video c23 FF++, mask 4 phương pháp, DFD giả/thật và mask (75 GB)
@@ -166,14 +192,16 @@ Nếu chậm tiến độ: dùng tuần 7 để bù trước. Nếu vẫn trễ 
 - [x] Split chính thức FF++ (`data/splits/`)
 - [x] Viết `preprocess.py`, thử trên 21 video
 - [x] Tiền xử lý toàn bộ 8.431 video c23 (`data/faces/`)
-- [ ] Tiền xử lý bản c40 (`data/faces_c40/`, đang chạy)
+- [x] Tiền xử lý bản c40 (`data/faces_c40/`, `data/index_c40/`)
 - [x] Viết `build_index.py`, `dataset.py`, `metrics.py`, `models.py`, `train.py`, `evaluate.py`, `check_data.py`, 3 file config
 - [x] Chạy `build_index.py` và `check_data.py` trên dữ liệu mới, đo tỉ lệ vùng giả sau khi cắt
-- [ ] Chạy thử U-Net trên 5% dữ liệu mới
-- [ ] Train và đánh giá U-Net, DeepLabV3+, SegFormer-B0
+- [x] Chạy thử U-Net trên 5% dữ liệu mới
+- [x] Train và đánh giá U-Net (test c23, c40, DFD)
+- [ ] Train và đánh giá DeepLabV3+, SegFormer-B0
+- [ ] Test độ bền JPEG/blur/noise (chưa có code)
 - [ ] Test độ bền, phân tích, demo, báo cáo
 
-## 10. Rủi ro và lưu ý
+## 11. Rủi ro và lưu ý
 
 | Rủi ro | Cách xử lý |
 | --- | --- |
@@ -185,7 +213,7 @@ Nếu chậm tiến độ: dùng tuần 7 để bù trước. Nếu vẫn trễ 
 | Giấy phép dữ liệu | FF++ và DFD chỉ cho nghiên cứu: không chia sẻ dữ liệu, không tạo deepfake người chưa đồng ý |
 | Demo không tuyệt đối | Hiển thị bản đồ xác suất và cảnh báo "có thể sai" |
 
-## 11. Tài liệu tham khảo
+## 12. Tài liệu tham khảo
 
 - [FaceForensics++](https://github.com/ondyari/FaceForensics): Rössler và cộng sự, ICCV 2019 (gồm dữ liệu DeepFakeDetection của Google)
 - [RetinaFace](https://arxiv.org/abs/1905.00641): Deng và cộng sự, CVPR 2020; bản PyTorch [batch-face](https://github.com/elliottzheng/batch-face)
