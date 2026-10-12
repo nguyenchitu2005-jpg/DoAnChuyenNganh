@@ -29,7 +29,8 @@ from models import build_model
 def load_config(args):
     with open(args.config, encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
-    for key in ('epochs', 'batch_size', 'lr', 'name'):
+    for key in ('epochs', 'batch_size', 'lr', 'name', 'data_root', 'index_dir',
+                'num_workers'):
         if getattr(args, key) is not None:
             cfg[key] = getattr(args, key)
     cfg['fraction'] = args.fraction
@@ -53,11 +54,16 @@ def main():
     parser.add_argument('--name')
     parser.add_argument('--fraction', type=float, default=1.0,
                         help='Chỉ dùng một phần video train/val (để chạy thử).')
+    # Đổi thư mục khi train ở máy khác (Kaggle: dữ liệu ở /kaggle/input)
+    parser.add_argument('--data-root', dest='data_root')
+    parser.add_argument('--index-dir', dest='index_dir')
+    parser.add_argument('--num-workers', dest='num_workers', type=int)
+    parser.add_argument('--runs-dir', default='runs')
     args = parser.parse_args()
     cfg = load_config(args)
     seed_everything(cfg['seed'])
 
-    run_dir = os.path.join('runs', cfg['name'])
+    run_dir = os.path.join(args.runs_dir, cfg['name'])
     os.makedirs(run_dir, exist_ok=True)
     with open(os.path.join(run_dir, 'config.yaml'), 'w', encoding='utf-8') as f:
         yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)

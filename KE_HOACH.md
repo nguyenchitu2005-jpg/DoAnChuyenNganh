@@ -145,6 +145,12 @@ tensorboard --logdir runs
 ```
 Khi GPU đang bận train, thêm `--cpu` vào lệnh 6 và 7 (chậm hơn nhiều, nên dùng kèm `--fraction`).
 
+**Train trên Kaggle** (khi muốn rảnh máy nhà): đóng gói train/val/test bằng
+`src/pack_kaggle.py --user <tên Kaggle>` (khoảng 12 GB), tải lên một Kaggle Dataset **riêng tư**
+(giấy phép FF++ không cho chia sẻ), rồi chạy `kaggle/train_kaggle.ipynb`. Notebook clone code từ GitHub, train
+vào `/kaggle/working/runs/` và đánh giá trên test. Tải `best.pt` về `runs/<tên run>/` để chạy
+DFD, c40, độ bền và hình minh hoạ ở máy nhà (`evaluate.py` tự đổi về `data/faces`).
+
 ## 8. Lịch thực hiện
 
 | Tuần | Thời gian | Công việc | Đầu ra |

@@ -47,6 +47,10 @@ def load_checkpoint(path, compression='c23', device=None):
     """Mô hình đã nạp trọng số, cfg (đổi thư mục dữ liệu nếu c40) và checkpoint."""
     ckpt = torch.load(path, map_location='cpu', weights_only=False)
     cfg = ckpt['cfg']
+    if not os.path.isdir(cfg['data_root']):
+        # checkpoint train ở máy khác (Kaggle): dùng dữ liệu ở máy này
+        cfg = dict(cfg, data_root='data/faces', index_dir='data/index',
+                   num_workers=6)
     if compression != 'c23':
         cfg = dict(cfg, data_root='data/faces_' + compression,
                    index_dir='data/index_' + compression)
