@@ -169,30 +169,71 @@ Nếu chậm tiến độ: dùng tuần 7 để bù trước. Nếu vẫn trễ 
 
 ## 9. Kết quả
 
-### U-Net EfficientNet-B0 (train c23, 10 epoch, `best.pt` là epoch 8)
+Cả hai mô hình train trên FF++ c23, 10 epoch, cùng cấu hình. U-Net: `best.pt` là epoch 8, train khoảng 3 tiếng. DeepLabV3+: `best.pt` là epoch 7, train khoảng 2,6 tiếng. SegFormer-B0 chưa train.
 
-Trên val, tỉ lệ báo nhầm giảm từ 27,9% (epoch 1) xuống khoảng 8%, còn IoU ảnh giả tăng từ 0,898 lên 0,926. Các epoch 6–10 gần như không đổi.
+### 9.1. Tổng hợp trên 3 tập test
 
-| Tập test | IoU | Dice | Precision | Recall | F1 | Pixel-AUC | Báo nhầm (mặt thật) |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| FF++ c23, Deepfakes | 0,923 | 0,955 | 0,966 | 0,954 | 0,960 | 0,998 | |
-| FF++ c23, Face2Face | 0,932 | 0,952 | 0,982 | 0,950 | 0,966 | 0,998 | |
-| FF++ c23, FaceSwap | 0,930 | 0,954 | 0,974 | 0,957 | 0,965 | 0,997 | |
-| FF++ c23, NeuralTextures | 0,860 | 0,886 | 0,976 | 0,880 | 0,925 | 0,993 | |
-| **FF++ c23, tất cả** | **0,911** | **0,937** | 0,975 | 0,934 | 0,954 | 0,996 | **6,0%** |
-| FF++ c40, Deepfakes | 0,798 | 0,840 | 0,945 | 0,842 | 0,891 | 0,988 | |
-| FF++ c40, Face2Face | 0,513 | 0,542 | 0,973 | 0,533 | 0,689 | 0,973 | |
-| FF++ c40, FaceSwap | 0,779 | 0,814 | 0,962 | 0,810 | 0,880 | 0,987 | |
-| FF++ c40, NeuralTextures | 0,332 | 0,354 | 0,970 | 0,342 | 0,505 | 0,961 | |
-| **FF++ c40, tất cả** | **0,606** | **0,638** | 0,961 | 0,617 | 0,752 | 0,972 | **14,5%** |
-| **DFD (kiểm tra chéo)** | **0,560** | **0,643** | 0,737 | 0,749 | 0,743 | 0,951 | **20,4%** |
+| Tập test | Mô hình | IoU | Dice | Precision | Recall | F1 | Pixel-AUC | Báo nhầm mặt thật |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| FF++ c23 | U-Net | **0,911** | **0,937** | 0,975 | **0,934** | **0,954** | 0,996 | 6,0% |
+| FF++ c23 | DeepLabV3+ | 0,906 | 0,932 | **0,978** | 0,926 | 0,951 | **0,997** | **5,9%** |
+| FF++ c40 | U-Net | **0,606** | **0,638** | 0,961 | **0,617** | **0,752** | **0,972** | 14,5% |
+| FF++ c40 | DeepLabV3+ | 0,568 | 0,599 | 0,961 | 0,574 | 0,719 | 0,966 | **13,3%** |
+| DFD (kiểm tra chéo) | U-Net | **0,560** | **0,643** | 0,737 | **0,749** | **0,743** | **0,951** | 20,4% |
+| DFD (kiểm tra chéo) | DeepLabV3+ | 0,533 | 0,612 | **0,741** | 0,712 | 0,726 | 0,947 | **17,7%** |
 
-Nhận xét:
-- **Trên c23**, mô hình định vị vùng giả tốt (IoU 0,91) và ít tô nhầm mặt thật (6%). NeuralTextures khó nhất: phương pháp này chỉ sửa tinh vi vùng biểu cảm.
-- **Trên c40**, precision vẫn khoảng 0,96 nhưng recall giảm mạnh. Chỗ nào mô hình tô thì vẫn đúng, nhưng nó bỏ sót nhiều vùng giả. Face2Face và NeuralTextures giảm nhiều nhất (IoU 0,51 và 0,33): dấu vết chỉnh biểu cảm bị nén xoá mất.
-- **Trên DFD**, cả precision và recall đều khoảng 0,74, và báo nhầm tăng lên 20%. Mô hình train trên FF++ tổng quát chưa tốt sang deepfake của Google. Một phần nguyên nhân là mask DFD (gần chữ nhật) khác hình dạng mask của phần lớn FF++.
+### 9.2. IoU theo phương pháp giả (FF++ test)
 
-## 10. Tình trạng (cập nhật 12/10/2026)
+| Phương pháp | U-Net c23 | DeepLabV3+ c23 | U-Net c40 | DeepLabV3+ c40 |
+| --- | --- | --- | --- | --- |
+| Deepfakes | **0,923** | 0,915 | **0,798** | 0,767 |
+| Face2Face | 0,932 | 0,932 | **0,513** | 0,444 |
+| FaceSwap | **0,930** | 0,925 | **0,779** | 0,760 |
+| NeuralTextures | **0,860** | 0,853 | **0,332** | 0,299 |
+
+### 9.3. Độ bền với JPEG, blur, noise (FF++ test c23, `src/robustness.py`)
+
+| Làm hỏng | IoU U-Net | IoU DeepLabV3+ | Báo nhầm U-Net | Báo nhầm DeepLabV3+ |
+| --- | --- | --- | --- | --- |
+| Ảnh gốc | 0,911 | 0,906 | 6,0% | 5,8% |
+| JPEG 50 | 0,875 | 0,859 | 11,2% | 9,5% |
+| JPEG 30 | 0,836 | 0,806 | 12,3% | 10,7% |
+| JPEG 10 | 0,469 | 0,444 | 4,9% | 5,1% |
+| Blur kernel 7 | 0,881 | 0,860 | 10,4% | 7,1% |
+| Blur kernel 11 | 0,890 | 0,878 | 38,8% | 26,5% |
+| Blur kernel 15 | 0,897 | 0,888 | 86,8% | 84,0% |
+| Blur kernel 21 | 0,869 | 0,848 | 99,0% | 99,1% |
+| Noise 0,05 | 0,850 | 0,827 | 18,7% | 16,5% |
+| Noise 0,15 | 0,680 | 0,601 | 29,9% | 23,1% |
+
+Bảng đầy đủ theo từng phương pháp nằm ở `runs/<run>/robustness/robustness.md`.
+
+![Độ bền của U-Net](docs/figures/unet_robustness.png)
+
+![Độ bền của DeepLabV3+](docs/figures/deeplabv3plus_robustness.png)
+
+### 9.4. Hình minh hoạ và ca sai (`src/visualize.py`)
+
+Hình nằm ở `runs/<run>/figures/` và không đưa lên git, vì chứa khuôn mặt trong dữ liệu FF++ (giấy phép không cho chia sẻ công khai). Mỗi hình có các cột: ảnh, mask thật, xác suất dự đoán, sai số (xanh dương là đúng, cam là tô thừa, xanh ngọc là bỏ sót).
+
+| File | Nội dung |
+| --- | --- |
+| `test_random_<phương pháp>.png` | 6 ảnh ngẫu nhiên mỗi phương pháp |
+| `test_worst_<phương pháp>.png` | 6 ca IoU thấp nhất, mỗi video một frame |
+| `test_worst_original.png` | Mặt thật bị báo nhầm nhiều nhất |
+| `dfd_worst_DFD.png`, `dfd_worst_actors.png` | Ca sai nhiều nhất khi kiểm tra chéo |
+
+### 9.5. Nhận xét
+
+- **Hai CNN ngang nhau trên dữ liệu cùng phân phối.** Trên FF++ c23, IoU là 0,911 (U-Net) và 0,906 (DeepLabV3+), báo nhầm khoảng 6% ở cả hai. NeuralTextures khó nhất (IoU khoảng 0,85–0,86) vì chỉ sửa tinh vi vùng biểu cảm.
+- **U-Net bền hơn một chút khi ảnh bị suy giảm.** U-Net có IoU cao hơn DeepLabV3+ trên c40 (+3,8 điểm), DFD (+2,7) và ở mọi mức JPEG và noise (chênh nhiều nhất +7,9 ở noise 0,15). Một giải thích hợp lý là skip connection của U-Net giữ chi tiết ở độ phân giải cao; giả thuyết này cần kiểm chứng thêm. Đổi lại, DeepLabV3+ báo nhầm ít hơn một chút.
+- **Nén mạnh làm mô hình bỏ sót chứ không tô sai.** Ở c40, precision vẫn khoảng 0,96 nhưng recall giảm còn khoảng 0,6. Face2Face và NeuralTextures giảm nặng nhất (IoU 0,44–0,51 và 0,30–0,33). Ở JPEG 10, mô hình gần như không tô gì: IoU 0,47 và báo nhầm chỉ khoảng 5%.
+- **Blur mạnh làm IoU cao giả tạo.** Từ kernel 11, mô hình chuyển sang "tô cả khuôn mặt": báo nhầm tăng lên 27–39%, 84–87% rồi 99%. IoU của Face2Face và NeuralTextures lại tăng vì mask hai loại này phủ cả mặt. Đây là minh chứng cho việc **luôn phải báo IoU kèm tỉ lệ báo nhầm**.
+- **Noise ảnh hưởng nặng tới NeuralTextures** (IoU giảm từ 0,86 xuống 0,44 với U-Net ở noise 0,15) và làm báo nhầm tăng đều.
+- **Kiểm tra chéo trên DFD kém rõ rệt** (IoU 0,53–0,56, báo nhầm 18–20%). Trong `dfd_worst_DFD.png`, nhiều frame giả của DFD **không được tô chút nào** (IoU 0). Mô hình chưa nhận ra kiểu deepfake của Google. Mask DFD gần chữ nhật, khác hình dạng mask của Face2Face, FaceSwap và NeuralTextures.
+- Trong 6 ca sai nhiều nhất của U-Net, có 2 ca (NeuralTextures) và 3 ca (DFD) là frame đầu video (`frame 0000`). Điểm này cần xem thêm: có thể ở đầu video, vùng chỉnh sửa còn yếu.
+
+## 10. Tình trạng (cập nhật 12/10/2026 tối)
 
 - [x] Môi trường: Python 3.12 (`.venv`), PyTorch 2.14 CUDA 13.0, segmentation_models_pytorch, transformers, albumentations, batch-face
 - [x] Tải toàn bộ dữ liệu TUM: 5.000 video c23 FF++, mask 4 phương pháp, DFD giả/thật và mask (75 GB)
@@ -205,9 +246,11 @@ Nhận xét:
 - [x] Chạy `build_index.py` và `check_data.py` trên dữ liệu mới, đo tỉ lệ vùng giả sau khi cắt
 - [x] Chạy thử U-Net trên 5% dữ liệu mới
 - [x] Train và đánh giá U-Net (test c23, c40, DFD)
-- [ ] Train và đánh giá DeepLabV3+, SegFormer-B0
+- [x] Train và đánh giá DeepLabV3+ (test c23, c40, DFD)
+- [ ] Train và đánh giá SegFormer-B0
 - [x] Viết `robustness.py` (JPEG 90–10, blur kernel 3–21, noise 0,02–0,15) và `visualize.py` (ngẫu nhiên, ca sai nhiều nhất)
-- [ ] Chạy `robustness.py` và `visualize.py` đầy đủ cho từng mô hình
+- [x] Chạy `robustness.py` và `visualize.py` đầy đủ cho U-Net và DeepLabV3+
+- [ ] Chạy `robustness.py` và `visualize.py` cho SegFormer-B0
 - [ ] Test độ bền, phân tích, demo, báo cáo
 
 ## 11. Rủi ro và lưu ý

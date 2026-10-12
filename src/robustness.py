@@ -162,7 +162,6 @@ def plot(rows, out_path, title):
                      else 100 * r['false_alarm'] for r in rs], color=SERIES[0],
                 linewidth=2, marker='o', markersize=7, markeredgecolor=SURFACE,
                 markeredgewidth=1.5)
-        ax.set_ylim(bottom=0)
         ax.set_xlabel(AXIS[kind] + ('  (mức 100 = ảnh gốc)' if kind == 'jpeg'
                                     else '  (mức đầu = ảnh gốc)'),
                       color=MUTED, fontsize=9)
@@ -170,6 +169,10 @@ def plot(rows, out_path, title):
             ax.set_ylabel('Báo nhầm mặt thật (%)', color=INK2)
         if kind == 'jpeg':
             ax.invert_xaxis()   # trái sang phải = càng hỏng (trục x dùng chung cột)
+    # đặt trục y sau khi vẽ hết: hàng dưới dùng chung trục, đặt sớm sẽ cắt mất
+    # các mức báo nhầm lớn ở cột blur/noise
+    fa = [r['false_alarm'] for r in rows if r['false_alarm'] is not None]
+    axes[1, 0].set_ylim(0, max(10, 100 * max(fa) * 1.08) if fa else 10)
     handles, labels = axes[0, 0].get_legend_handles_labels()
     fig.legend(handles, labels, loc='upper right', ncol=4, frameon=False,
                fontsize=9, labelcolor=INK2, bbox_to_anchor=(0.98, 0.98))
@@ -179,10 +182,25 @@ def plot(rows, out_path, title):
     plt.close(fig)
 
 
+def read_csv(path):
+    """Đọc lại robustness.csv (để vẽ lại biểu đồ mà không đánh giá lại)."""
+    rows = []
+    with open(path, encoding='utf-8') as f:
+        for r in csv.DictReader(f):
+            row = {}
+            for k, v in r.items():
+                row[k] = (v if k in ('kind', 'level') else
+                          None if v == '' else float(v))
+            rows.append(row)
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('checkpoint')
     parser.add_argument('--split', default='test', choices=['val', 'test', 'dfd'])
+    parser.add_argument('--replot', action='store_true',
+                        help='Chỉ vẽ lại biểu đồ từ robustness.csv đã có.')
     parser.add_argument('--fraction', type=float, default=1.0,
                         help='Chỉ đánh giá một phần video (để chạy thử).')
     parser.add_argument('--cpu', action='store_true',
@@ -196,8 +214,11 @@ def main():
         cfg = dict(cfg, num_workers=0)
     out_dir = os.path.join(os.path.dirname(args.checkpoint), 'robustness')
     os.makedirs(out_dir, exist_ok=True)
-    rows = evaluate_levels(model, cfg, device, args.split, args.fraction)
-    write_tables(rows, out_dir)
+    if args.replot:
+        rows = read_csv(os.path.join(out_dir, 'robustness.csv'))
+    else:
+        rows = evaluate_levels(model, cfg, device, args.split, args.fraction)
+        write_tables(rows, out_dir)
     plot(rows, os.path.join(out_dir, 'robustness.png'),
          '{}: độ bền trên FF++ {} (epoch {})'.format(cfg['name'], args.split,
                                                     ckpt['epoch']))
