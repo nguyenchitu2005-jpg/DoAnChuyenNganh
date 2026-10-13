@@ -1,5 +1,9 @@
 """Phân tích lỗi theo nhóm: IoU theo cặp diễn viên (DFD) và theo vị trí frame trong video.
 
+Kết luận thật/giả cả video (--split video): video giả nếu tỉ lệ frame có vùng giả
+(> 1% diện tích mặt) >= ngưỡng; ngưỡng chọn trên FF++ val, đo trên test và DFD.
+Lưu <thư mục run>/video_rule.json cho demo.py và bảng runs/analysis_video.md.
+
 Chạy: python src/analyze.py runs/unet_effb0/best.pt runs/deeplabv3plus_effb0/best.pt \
           runs/segformer_b0/best.pt --split dfd
 Điểm từng frame (IoU ảnh giả, diện tích báo nhầm ảnh thật) lưu ở
@@ -8,10 +12,12 @@ Bảng tổng hợp: runs/analysis_<split>.md
 """
 import argparse
 import csv
+import json
 import os
 from collections import defaultdict
 
 import numpy as np
+from sklearn.metrics import roc_auc_score
 
 FA_AREA = 0.01  # giống metrics.py: ảnh thật bị báo nhầm khi vùng dự đoán > 1%
 
@@ -19,7 +25,7 @@ FA_AREA = 0.01  # giống metrics.py: ảnh thật bị báo nhầm khi vùng d�
 def frame_scores(checkpoint, split):
     path = os.path.join(os.path.dirname(checkpoint), 'analysis',
                         'scores_{}.csv'.format(split))
-    if not os.path.exists(path):
+    if not os.path.exists(path) or 'area' not in open(path).readline():
         from dataset import FaceSegDataset, eval_transform
         from evaluate import load_checkpoint
         from visualize import rank_all
@@ -30,14 +36,15 @@ def frame_scores(checkpoint, split):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w', newline='', encoding='utf-8') as f:
             w = csv.writer(f)
-            w.writerow(['frame', 'method', 'video', 'label', 'score'])
-            for i, method, label, s in scores:
+            w.writerow(['frame', 'method', 'video', 'label', 'score', 'area'])
+            for i, method, label, s, a in scores:
                 frame, _, _, video, _ = ds.rows[i]
-                w.writerow([frame, method, video.split('/', 1)[1], label, s])
+                w.writerow([frame, method, video.split('/', 1)[1], label, s, a])
     with open(path, newline='', encoding='utf-8') as f:
         rows = list(csv.DictReader(f))
     for r in rows:
-        r['label'], r['score'] = int(r['label']), float(r['score'])
+        r['label'], r['score'], r['area'] = (int(r['label']), float(r['score']),
+                                             float(r['area']))
     # vị trí frame trong 32 frame lấy mẫu của video (0 = frame đầu)
     by_video = defaultdict(list)
     for r in rows:
@@ -106,22 +113,76 @@ def by_pair(results, names, top=8):
     return summary + [''] + table(['Cặp', 'Số video'] + names, lines), stats
 
 
+def video_scores(rows):
+    """Mỗi video: tỉ lệ frame có vùng giả dự đoán > 1% diện tích mặt, và nhãn."""
+    flags, labels = defaultdict(list), {}
+    for r in rows:
+        key = (r['method'], r['video'])
+        flags[key].append(r['area'] > FA_AREA)
+        labels[key] = r['label']
+    keys = sorted(flags)
+    return (np.array([np.mean(flags[k]) for k in keys]),
+            np.array([labels[k] for k in keys]))
+
+
+def rule_stats(score, label, t):
+    pred = score >= t
+    real, fake = pred[label == 0], pred[label == 1]
+    return {'real_videos': int(len(real)), 'fake_videos': int(len(fake)),
+            'real_correct': float(1 - real.mean()), 'fake_correct': float(fake.mean()),
+            'balanced_acc': float((1 - real.mean() + fake.mean()) / 2),
+            'auc': float(roc_auc_score(label, score))}
+
+
+def video_rule(checkpoint):
+    """Chọn ngưỡng trên val theo độ chính xác cân bằng (val có 4 video giả mỗi
+    video thật), rồi đo trên test và DFD."""
+    val_s, val_y = video_scores(frame_scores(checkpoint, 'val'))
+    grid = np.arange(1, 33) / 32   # 32 frame mỗi video
+    t = max(grid, key=lambda g: rule_stats(val_s, val_y, g)['balanced_acc'])
+    rule = {'threshold': float(t), 'fa_area': FA_AREA}
+    for split in ('val', 'test', 'dfd'):
+        rule[split] = rule_stats(*video_scores(frame_scores(checkpoint, split)), t)
+    with open(os.path.join(os.path.dirname(checkpoint), 'video_rule.json'), 'w',
+              encoding='utf-8') as f:
+        json.dump(rule, f, indent=2)
+    return rule
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('checkpoints', nargs='+')
-    parser.add_argument('--split', default='dfd', choices=['val', 'test', 'dfd'])
+    parser.add_argument('--split', default='dfd',
+                        choices=['val', 'test', 'dfd', 'video'])
     args = parser.parse_args()
 
     names = [os.path.basename(os.path.dirname(c)) for c in args.checkpoints]
-    results = {n: frame_scores(c, args.split)
-               for n, c in zip(names, args.checkpoints)}
-    lines = ['# Phân tích lỗi trên {}'.format(args.split), '',
-             '## IoU (ảnh giả) và báo nhầm (ảnh thật) theo vị trí frame', '']
-    lines += by_position(results, names)
-    if args.split == 'dfd':
-        pair_lines, _ = by_pair(results, names)
-        lines += ['', '## DFD: IoU theo cặp diễn viên (8 cặp kém nhất, 8 cặp tốt nhất)',
-                  ''] + pair_lines
+    if args.split == 'video':
+        lines = ['# Kết luận thật/giả theo video', '',
+                 'Video giả nếu tỉ lệ frame có vùng giả (> 1% diện tích mặt) >= ngưỡng; '
+                 'ngưỡng chọn trên FF++ val.', '']
+        rows = []
+        for n, c in zip(names, args.checkpoints):
+            rule = video_rule(c)
+            for split in ('val', 'test', 'dfd'):
+                s = rule[split]
+                rows.append([n, '{:.0%}'.format(rule['threshold']), split,
+                             '{} / {}'.format(s['real_videos'], s['fake_videos']),
+                             '{:.1%}'.format(s['real_correct']),
+                             '{:.1%}'.format(s['fake_correct']),
+                             '{:.1%}'.format(s['balanced_acc']), '{:.3f}'.format(s['auc'])])
+        lines += table(['Mô hình', 'Ngưỡng', 'Tập', 'Video thật / giả', 'Đúng video thật',
+                        'Đúng video giả', 'Chính xác cân bằng', 'AUC'], rows)
+    else:
+        results = {n: frame_scores(c, args.split)
+                   for n, c in zip(names, args.checkpoints)}
+        lines = ['# Phân tích lỗi trên {}'.format(args.split), '',
+                 '## IoU (ảnh giả) và báo nhầm (ảnh thật) theo vị trí frame', '']
+        lines += by_position(results, names)
+        if args.split == 'dfd':
+            pair_lines, _ = by_pair(results, names)
+            lines += ['', '## DFD: IoU theo cặp diễn viên (8 cặp kém nhất, '
+                      '8 cặp tốt nhất)', ''] + pair_lines
     out = os.path.join('runs', 'analysis_{}.md'.format(args.split))
     with open(out, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines) + '\n')

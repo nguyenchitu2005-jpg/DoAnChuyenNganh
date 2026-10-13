@@ -62,7 +62,8 @@ def predict(model, x, device):
 
 @torch.no_grad()
 def rank_all(model, ds, cfg, device, threshold):
-    """Điểm mỗi ảnh: ảnh giả = IoU, ảnh thật = phần trăm diện tích bị báo nhầm."""
+    """Điểm mỗi ảnh: ảnh giả = IoU, ảnh thật = phần trăm diện tích bị báo nhầm;
+    kèm diện tích dự đoán (cả ảnh giả) để analyze.py kết luận theo video."""
     loader = DataLoader(ds, batch_size=cfg['batch_size'] * 2, shuffle=False,
                         num_workers=cfg['num_workers'])
     scores, start = [], 0
@@ -74,7 +75,8 @@ def rank_all(model, ds, cfg, device, threshold):
         area = pred.flatten(1).float().mean(1)
         for i in range(len(x)):
             s = (inter[i] / union[i]).item() if label[i] else area[i].item()
-            scores.append((start + i, METHODS[int(method[i])], int(label[i]), s))
+            scores.append((start + i, METHODS[int(method[i])], int(label[i]), s,
+                           area[i].item()))
         start += len(x)
     return scores
 
@@ -86,7 +88,7 @@ def pick(ds, scores, mode, n, seed=0):
             by_method[METHODS[r[2]]].append((i, r[4], None))
         rng = random.Random(seed)
         return {m: rng.sample(v, min(n, len(v))) for m, v in by_method.items()}
-    for i, m, label, s in scores:
+    for i, m, label, s, _ in scores:
         by_method[m].append((i, label, s))
     out = {}
     for m, v in by_method.items():

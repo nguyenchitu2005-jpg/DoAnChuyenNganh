@@ -3,9 +3,11 @@
 Chạy: python src/demo.py   rồi mở http://127.0.0.1:7860
 Mỗi frame được cắt mặt giống hệt lúc train (RetinaFace, nới khung 1,3 lần, 256×256,
 xem preprocess.py), dự đoán mask, rồi dán ngược mask lên frame gốc.
-Kết quả: video có tô vùng giả, biểu đồ diện tích vùng giả theo thời gian, tóm tắt.
+Kết quả: kết luận thật/giả kèm bằng chứng (quy tắc và ngưỡng trong <run>/video_rule.json,
+tạo bằng `analyze.py --split video`), video có tô vùng giả, bản đồ xác suất, biểu đồ.
 """
 import glob
+import json
 import os
 import tempfile
 
@@ -142,15 +144,52 @@ def run(video, model_name, progress=gr.Progress()):
     gallery = [(panel(crops[k], probs[k], thr), 'giây {:.1f}: xác suất lớn nhất {:.2f}, '
                 'vùng giả {:.0%}'.format(t[found[k]], peak[found[k]], area[found[k]]))
                for k in pick_frames(probs)]
-    flagged = (area[found] > FA_AREA).mean() if found else 0.0
-    summary = (
-        '**{}** frame đã xử lý, {} frame không thấy mặt.  \n'
-        'Mô hình tô vùng giả (> 1% diện tích mặt) ở **{:.0%}** số frame có mặt, '
-        'diện tích trung bình **{:.1%}**.  \n'
-        'Tham khảo: trên FF++ test, mặt thật bị tô nhầm ở khoảng 6% số frame.'
-    ).format(len(frames), len(frames) - len(found), flagged,
-             np.nanmean(area) if found else 0.0)
+    summary = verdict(model_name, len(frames), area[found], peak[found], t[found])
     return out_path, df, gallery, summary
+
+
+def verdict(model_name, n_frames, area, peak, t):
+    """Kết luận thật/giả cả video kèm bằng chứng và độ tin cậy đo trên test, DFD."""
+    head = '**{}** frame đã xử lý, {} frame không thấy mặt.\n\n'.format(
+        n_frames, n_frames - len(area))
+    if not len(area):
+        return head + '## Không kết luận được: không tìm thấy khuôn mặt.'
+    flagged = (area > FA_AREA).mean()
+    path = os.path.join(os.path.dirname(CHECKPOINTS[model_name]), 'video_rule.json')
+    if not os.path.exists(path):
+        return head + ('Chưa có quy tắc kết luận cho mô hình này: chạy '
+                       '`python src/analyze.py {} --split video`.'.format(
+                           CHECKPOINTS[model_name]))
+    with open(path, encoding='utf-8') as f:
+        rule = json.load(f)
+    # quy tắc chọn trên 32 frame/video chưa làm trơn; demo dùng tới 300 frame đã
+    # làm trơn nên tỉ lệ frame có thể lệch chút ít so với lúc chọn ngưỡng
+    fake = flagged >= rule['threshold']
+    k = int(np.nanargmax(peak))
+    lines = [
+        head + '## Kết luận: {}'.format('🟠 GIẢ (có vùng mặt bị chỉnh sửa)' if fake
+                                        else '🔵 THẬT (không thấy vùng bị chỉnh sửa)'),
+        '**Bằng chứng**',
+        '- **{:.0%}** số frame có vùng giả (> 1% diện tích mặt). Ngưỡng kết luận giả: '
+        '≥ **{:.0%}** số frame, chọn trên tập FF++ val.'.format(flagged, rule['threshold']),
+        '- Diện tích vùng giả trung bình **{:.1%}** mặt; xác suất giả cao nhất **{:.2f}** '
+        '(giây {:.1f}).'.format(np.mean(area), peak[k], t[k]),
+        '- Vị trí từng pixel bị cho là giả: xem bản đồ xác suất bên dưới và video kết quả.',
+    ]
+    if abs(flagged - rule['threshold']) < 0.1:
+        lines.append('- ⚠️ Tỉ lệ frame gần ngưỡng: kết luận kém chắc chắn.')
+    lines += [
+        '', '**Độ tin cậy của quy tắc này ({})**'.format(model_name), '',
+        '| Tập kiểm tra | Nhận đúng video thật | Nhận đúng video giả |',
+        '| --- | --- | --- |',
+        '| FF++ test (cùng nguồn với dữ liệu train) | {:.1%} | {:.1%} |'.format(
+            rule['test']['real_correct'], rule['test']['fake_correct']),
+        '| DFD (deepfake của Google, nguồn khác) | {:.1%} | {:.1%} |'.format(
+            rule['dfd']['real_correct'], rule['dfd']['fake_correct']),
+        '', 'Mô hình chỉ học từ FF++ (video tin tức, 4 phương pháp giả). Video quay bằng '
+            'điện thoại/webcam hoặc deepfake tạo bằng công cụ khác có thể bị kết luận sai.',
+    ]
+    return '\n'.join(lines)
 
 
 def pick_frames(probs, n=6):
