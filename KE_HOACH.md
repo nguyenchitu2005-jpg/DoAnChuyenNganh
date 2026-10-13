@@ -145,6 +145,8 @@ tensorboard --logdir runs
 
 # 8. Phân tích lỗi theo vị trí frame và cặp diễn viên DFD (runs/analysis_<split>.md)
 .venv\Scripts\python src/analyze.py runs/unet_effb0/best.pt runs/deeplabv3plus_effb0/best.pt runs/segformer_b0/best.pt --split dfd
+# Ngưỡng kết luận thật/giả theo video cho demo (runs/<run>/video_rule.json)
+.venv\Scripts\python src/analyze.py runs/unet_effb0/best.pt runs/deeplabv3plus_effb0/best.pt runs/segformer_b0/best.pt --split video
 
 # 9. Demo Gradio (mở http://127.0.0.1:7860)
 .venv\Scripts\python src/demo.py
@@ -296,6 +298,24 @@ Chạy thử với U-Net trên video FF++ test (khoảng 35 giây cho 160–180 
 | NeuralTextures `953_974` | 100% | 33,9% |
 | Gốc `953` | 0% | 0,0% |
 
+### 9.8. Kết luận thật/giả cả video (`analyze.py --split video`)
+
+Đề tài là segmentation, nhưng demo cần kết luận cho cả video. Quy tắc: video **giả** nếu tỉ lệ frame có vùng giả (> 1% diện tích mặt) ≥ ngưỡng. Ngưỡng chọn trên **FF++ val** theo độ chính xác cân bằng (val có 4 video giả cho mỗi video thật); test và DFD chỉ dùng để đo. Mỗi video dùng 32 frame như lúc đánh giá.
+
+| Mô hình | Ngưỡng | FF++ test: đúng video thật / giả | FF++ test: AUC | DFD: đúng video thật / giả | DFD: AUC |
+| --- | --- | --- | --- | --- | --- |
+| U-Net | ≥ 78% frame | 99,3% / 95,7% | 0,992 | **94,2%** / 68,6% | **0,903** |
+| DeepLabV3+ | ≥ 75% frame | 99,3% / 95,5% | 0,993 | 92,8% / 65,1% | 0,896 |
+| SegFormer-B0 | ≥ 59% frame | 99,3% / **97,1%** | 0,993 | 89,8% / **76,5%** | 0,891 |
+
+FF++ test có 140 video thật và 558 video giả; DFD có 363 video thật và 3.068 video giả.
+
+- Trên FF++, quy tắc gần như luôn đúng (độ chính xác cân bằng 97–98%).
+- Trên DFD, khoảng 1/4 đến 1/3 số video giả bị bỏ sót, vì mô hình không tô được kiểu deepfake mới (mục 9.5).
+- Ngưỡng của SegFormer thấp hơn (59%), nên nó bắt được nhiều video giả DFD hơn nhưng báo nhầm video thật nhiều hơn. AUC trên DFD của ba mô hình gần như bằng nhau (0,89–0,90).
+- Demo in kết luận kèm bằng chứng: tỉ lệ frame có vùng giả so với ngưỡng, diện tích và xác suất cao nhất, bản đồ xác suất từng pixel, bảng độ tin cậy ở trên, và cảnh báo khi tỉ lệ nằm gần ngưỡng (±10 điểm).
+- Demo dùng tới 300 frame đã làm trơn thay vì 32 frame. Kiểm tra trên 12 video FF++ test ngẫu nhiên (2 video mỗi phương pháp giả, 4 video thật) với U-Net: **12/12 cùng kết luận**. Làm trơn chỉ làm tỉ lệ frame tăng nhẹ ở video giả (ví dụ 90,6% lên 96,3%) và giảm ở video thật (3,1% xuống 0%).
+
 ## 10. Tình trạng (cập nhật 13/10/2026)
 
 - [x] Môi trường: Python 3.12 (`.venv`), PyTorch 2.14 CUDA 13.0, segmentation_models_pytorch, transformers, albumentations, batch-face
@@ -317,6 +337,7 @@ Chạy thử với U-Net trên video FF++ test (khoảng 35 giây cho 160–180 
 - [x] Thêm hướng dẫn và notebook train trên Kaggle (`kaggle/train_kaggle.ipynb`)
 - [x] Phân tích lỗi theo vị trí frame và cặp diễn viên DFD (`analyze.py`)
 - [x] Demo Gradio (`demo.py`), chạy thử trên video FF++ test
+- [x] Kết luận thật/giả cả video kèm bằng chứng (ngưỡng chọn trên val, đo trên test và DFD)
 - [ ] Báo cáo, slide
 
 ## 11. Rủi ro và lưu ý
