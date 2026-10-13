@@ -19,6 +19,7 @@ from scipy.ndimage import uniform_filter1d
 import preprocess
 from dataset import eval_transform
 from evaluate import load_checkpoint
+from visualize import PROB_CMAP
 
 MAX_FRAMES = 300       # video dài hơn thì lấy cách đều 300 frame
 SCALE, SIZE = 1.3, 256  # giống lúc tiền xử lý dữ liệu train
@@ -93,8 +94,9 @@ def run(video, model_name, progress=gr.Progress()):
                   for b in preprocess.detect_faces(frames[k:k + 32])]
     found = [i for i, b in enumerate(boxes) if b is not None]
     progress(0.5, desc='Dự đoán mask')
-    probs = predict([preprocess.square_crop(frames[i], boxes[i], SCALE, SIZE, None)
-                     for i in found], model, device)
+    crops = [preprocess.square_crop(frames[i], boxes[i], SCALE, SIZE, None)
+             for i in found]
+    probs = predict(crops, model, device)
     # trung bình xác suất 5 frame liền kề (ảnh mặt đã căn theo khung mặt nên gần khớp
     # nhau), giảm nhấp nháy và ảnh hưởng của frame khó như frame đầu/cuối video
     if len(probs):
@@ -128,8 +130,18 @@ def run(video, model_name, progress=gr.Progress()):
         writer.write(f)
     writer.release()
 
-    df = pd.DataFrame({'Thời gian (giây)': np.arange(len(frames)) / fps,
-                       'Vùng giả (% diện tích mặt)': 100 * area}).dropna()
+    peak = np.full(len(frames), np.nan)
+    peak[found] = probs.reshape(len(found), -1).max(1) if found else []
+    t = np.arange(len(frames)) / fps
+    df = pd.concat([
+        pd.DataFrame({'Thời gian (giây)': t, 'Giá trị (%)': 100 * area,
+                      'Chỉ số': 'Diện tích vùng giả (% mặt)'}),
+        pd.DataFrame({'Thời gian (giây)': t, 'Giá trị (%)': 100 * peak,
+                      'Chỉ số': 'Xác suất giả lớn nhất trên mặt'}),
+    ]).dropna()
+    gallery = [(panel(crops[k], probs[k], thr), 'giây {:.1f}: xác suất lớn nhất {:.2f}, '
+                'vùng giả {:.0%}'.format(t[found[k]], peak[found[k]], area[found[k]]))
+               for k in pick_frames(probs)]
     flagged = (area[found] > FA_AREA).mean() if found else 0.0
     summary = (
         '**{}** frame đã xử lý, {} frame không thấy mặt.  \n'
@@ -138,7 +150,29 @@ def run(video, model_name, progress=gr.Progress()):
         'Tham khảo: trên FF++ test, mặt thật bị tô nhầm ở khoảng 6% số frame.'
     ).format(len(frames), len(frames) - len(found), flagged,
              np.nanmean(area) if found else 0.0)
-    return out_path, df, summary
+    return out_path, df, gallery, summary
+
+
+def pick_frames(probs, n=6):
+    """n frame cách đều, thay frame cuối bằng frame có xác suất cao nhất."""
+    if not len(probs):
+        return []
+    ks = list(np.linspace(0, len(probs) - 1, n - 1).round().astype(int))
+    ks.append(int(probs.reshape(len(probs), -1).max(1).argmax()))
+    return sorted(set(ks))
+
+
+def panel(crop, prob, thr):
+    """Ảnh mặt | bản đồ xác suất từng pixel (thang cố định 0-1) | vùng vượt ngưỡng."""
+    rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    heat = (PROB_CMAP(prob)[..., :3] * 255).astype(np.uint8)
+    # viền xám để ô toàn 0 (mặt thật) không trông như ảnh trống
+    cv2.rectangle(heat, (0, 0), (SIZE - 1, SIZE - 1), (195, 194, 183), 2)
+    over = rgb.copy()
+    m = prob > thr
+    over[m] = (0.5 * over[m] + 0.5 * np.array(COLOR[::-1])).astype(np.uint8)
+    gap = np.full((SIZE, 6, 3), 255, np.uint8)
+    return np.hstack([rgb, gap, heat, gap, over])
 
 
 with gr.Blocks(title='Phát hiện vùng mặt bị chỉnh sửa') as app:
@@ -154,9 +188,14 @@ with gr.Blocks(title='Phát hiện vùng mặt bị chỉnh sửa') as app:
         with gr.Column():
             video_out = gr.Video(label='Kết quả')
             summary_out = gr.Markdown()
-    plot_out = gr.LinePlot(x='Thời gian (giây)', y='Vùng giả (% diện tích mặt)',
-                           label='Diện tích vùng giả theo thời gian', y_lim=[0, 100])
-    button.click(run, [video_in, model_in], [video_out, plot_out, summary_out])
+    gallery_out = gr.Gallery(
+        label='Từng pixel: ảnh mặt | xác suất giả (trắng = 0, xanh đậm = 1) | '
+              'vùng vượt ngưỡng 0,5 (cam)', columns=2, height='auto')
+    plot_out = gr.LinePlot(x='Thời gian (giây)', y='Giá trị (%)', color='Chỉ số',
+                           label='Vùng giả và xác suất giả theo thời gian',
+                           y_lim=[0, 100])
+    button.click(run, [video_in, model_in],
+                 [video_out, plot_out, gallery_out, summary_out])
 
 if __name__ == '__main__':
     app.launch()
