@@ -104,13 +104,17 @@ def pick_face(boxes, binary_mask):
     return boxes[max(range(len(boxes)), key=lambda k: (inside[k], area[k]))]
 
 
-def square_crop(img, box, scale, size, interp):
-    """Khung vuông cạnh = scale × cạnh dài của mặt; phần ra ngoài ảnh tô đen."""
+def crop_box(box, scale):
+    """Góc trái trên và cạnh của khung vuông = scale × cạnh dài của mặt."""
     x1, y1, x2, y2 = box
     cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
     half = max(x2 - x1, y2 - y1) * scale / 2
-    l, t = int(round(cx - half)), int(round(cy - half))
-    side = int(round(2 * half))
+    return int(round(cx - half)), int(round(cy - half)), int(round(2 * half))
+
+
+def square_crop(img, box, scale, size, interp):
+    """Cắt khung `crop_box`; phần ra ngoài ảnh tô đen."""
+    l, t, side = crop_box(box, scale)
     h, w = img.shape[:2]
     pad = max(0, -l, -t, l + side - w, t + side - h)
     if pad:

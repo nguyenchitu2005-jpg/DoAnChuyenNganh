@@ -1,0 +1,162 @@
+"""Demo Gradio: tải video lên, mô hình tô vùng mặt bị chỉnh sửa trên từng frame.
+
+Chạy: python src/demo.py   rồi mở http://127.0.0.1:7860
+Mỗi frame được cắt mặt giống hệt lúc train (RetinaFace, nới khung 1,3 lần, 256×256,
+xem preprocess.py), dự đoán mask, rồi dán ngược mask lên frame gốc.
+Kết quả: video có tô vùng giả, biểu đồ diện tích vùng giả theo thời gian, tóm tắt.
+"""
+import glob
+import os
+import tempfile
+
+import cv2
+import gradio as gr
+import numpy as np
+import pandas as pd
+import torch
+from scipy.ndimage import uniform_filter1d
+
+import preprocess
+from dataset import eval_transform
+from evaluate import load_checkpoint
+
+MAX_FRAMES = 300       # video dài hơn thì lấy cách đều 300 frame
+SCALE, SIZE = 1.3, 256  # giống lúc tiền xử lý dữ liệu train
+SMOOTH = 5            # số frame lấy trung bình xác suất
+FA_AREA = 0.01        # giống metrics.py: frame bị tô > 1% diện tích mặt là có vùng giả
+COLOR = (52, 104, 235)  # BGR của #eb6834 (cam, màu "tô thừa" trong visualize.py)
+CHECKPOINTS = {os.path.basename(os.path.dirname(p)): p
+               for p in sorted(glob.glob('runs/*/best.pt')) if 'smoke' not in p}
+_models = {}
+
+
+def get_model(name):
+    if name not in _models:
+        _models[name] = load_checkpoint(CHECKPOINTS[name])
+    if preprocess._detector is None:
+        preprocess.init_worker(0)
+    return _models[name]
+
+
+def read_video(path):
+    cap = cv2.VideoCapture(path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    step = max(1, -(-total // MAX_FRAMES))   # làm tròn lên
+    frames, i = [], 0
+    while len(frames) < MAX_FRAMES and cap.grab():
+        if i % step == 0:
+            frames.append(cap.retrieve()[1])
+        i += 1
+    cap.release()
+    return frames, fps / step
+
+
+def paste_back(prob, box, shape):
+    """Ngược với square_crop: phóng xác suất 256×256 về khung mặt trên frame gốc."""
+    l, t, side = preprocess.crop_box(box, SCALE)
+    h, w = shape[:2]
+    full = np.zeros((h, w), np.float32)
+    p = cv2.resize(prob, (side, side))
+    x1, y1, x2, y2 = max(l, 0), max(t, 0), min(l + side, w), min(t + side, h)
+    if x2 > x1 and y2 > y1:
+        full[y1:y2, x1:x2] = p[y1 - t:y2 - t, x1 - l:x2 - l]
+    return full
+
+
+@torch.no_grad()
+def predict(crops, model, device):
+    tf = eval_transform(SIZE)
+    probs = []
+    for k in range(0, len(crops), 32):
+        x = torch.stack([tf(image=cv2.cvtColor(c, cv2.COLOR_BGR2RGB))['image']
+                         for c in crops[k:k + 32]]).to(device)
+        with torch.autocast(device.type, dtype=torch.float16,
+                            enabled=device.type == 'cuda'):
+            probs.append(torch.sigmoid(model(x).float())[:, 0].cpu().numpy())
+    return np.concatenate(probs) if probs else np.zeros((0, SIZE, SIZE))
+
+
+def run(video, model_name, progress=gr.Progress()):
+    if not video:
+        raise gr.Error('Hãy tải lên một video.')
+    model, cfg, _, device = get_model(model_name)
+    progress(0, desc='Đọc video')
+    frames, fps = read_video(video)
+    if not frames:
+        raise gr.Error('Không đọc được video.')
+    progress(0.2, desc='Phát hiện mặt (RetinaFace)')
+    boxes = []
+    for k in range(0, len(frames), 32):
+        # video thường chỉ có một người: lấy mặt lớn nhất như với video thật lúc train
+        boxes += [preprocess.pick_face(b, None)
+                  for b in preprocess.detect_faces(frames[k:k + 32])]
+    found = [i for i, b in enumerate(boxes) if b is not None]
+    progress(0.5, desc='Dự đoán mask')
+    probs = predict([preprocess.square_crop(frames[i], boxes[i], SCALE, SIZE, None)
+                     for i in found], model, device)
+    # trung bình xác suất 5 frame liền kề (ảnh mặt đã căn theo khung mặt nên gần khớp
+    # nhau), giảm nhấp nháy và ảnh hưởng của frame khó như frame đầu/cuối video
+    if len(probs):
+        probs = uniform_filter1d(probs, SMOOTH, axis=0, mode='nearest')
+
+    thr = cfg['threshold']
+    area = np.full(len(frames), np.nan)
+    out_path = os.path.join(tempfile.mkdtemp(), 'ket_qua.webm')
+    h, w = frames[0].shape[:2]
+    # OpenCV pip không ghi được H.264; VP8/WebM thì trình duyệt phát được
+    writer = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'VP80'), fps, (w, h))
+    probs_by_frame = dict(zip(found, probs))
+    for i, f in enumerate(progress.tqdm(frames, desc='Ghi video')):
+        f = f.copy()
+        if i in probs_by_frame:
+            prob = probs_by_frame[i]
+            area[i] = (prob > thr).mean()
+            mask = paste_back(prob, boxes[i], f.shape) > thr
+            f[mask] = (0.5 * f[mask] + 0.5 * np.array(COLOR)).astype(np.uint8)
+            # viền đậm vì lớp tô cam khó thấy trên màu da
+            contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(f, contours, -1, COLOR, 3)
+            x1, y1, x2, y2 = boxes[i].astype(int)
+            cv2.rectangle(f, (x1, y1), (x2, y2), (255, 255, 255), 2)
+            text = 'vung gia {:.0%}'.format(area[i])
+        else:
+            text = 'khong thay mat'
+        cv2.putText(f, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                    (255, 255, 255), 2, cv2.LINE_AA)
+        writer.write(f)
+    writer.release()
+
+    df = pd.DataFrame({'Thời gian (giây)': np.arange(len(frames)) / fps,
+                       'Vùng giả (% diện tích mặt)': 100 * area}).dropna()
+    flagged = (area[found] > FA_AREA).mean() if found else 0.0
+    summary = (
+        '**{}** frame đã xử lý, {} frame không thấy mặt.  \n'
+        'Mô hình tô vùng giả (> 1% diện tích mặt) ở **{:.0%}** số frame có mặt, '
+        'diện tích trung bình **{:.1%}**.  \n'
+        'Tham khảo: trên FF++ test, mặt thật bị tô nhầm ở khoảng 6% số frame.'
+    ).format(len(frames), len(frames) - len(found), flagged,
+             np.nanmean(area) if found else 0.0)
+    return out_path, df, summary
+
+
+with gr.Blocks(title='Phát hiện vùng mặt bị chỉnh sửa') as app:
+    gr.Markdown('# Phát hiện vùng mặt bị chỉnh sửa (deepfake segmentation)\n'
+                'Tải video lên; vùng tô cam là vùng mô hình cho là bị chỉnh sửa.')
+    with gr.Row():
+        with gr.Column():
+            video_in = gr.Video(label='Video đầu vào')
+            model_in = gr.Dropdown(list(CHECKPOINTS), label='Mô hình',
+                                   value='unet_effb0' if 'unet_effb0' in CHECKPOINTS
+                                   else next(iter(CHECKPOINTS), None))
+            button = gr.Button('Phân tích', variant='primary')
+        with gr.Column():
+            video_out = gr.Video(label='Kết quả')
+            summary_out = gr.Markdown()
+    plot_out = gr.LinePlot(x='Thời gian (giây)', y='Vùng giả (% diện tích mặt)',
+                           label='Diện tích vùng giả theo thời gian', y_lim=[0, 100])
+    button.click(run, [video_in, model_in], [video_out, plot_out, summary_out])
+
+if __name__ == '__main__':
+    app.launch()

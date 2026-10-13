@@ -142,6 +142,12 @@ tensorboard --logdir runs
 # 7. Hình minh hoạ mask dự đoán và mask thật (runs/<run>/figures/)
 .venv\Scripts\python src/visualize.py runs/unet_effb0/best.pt --split test --mode random
 .venv\Scripts\python src/visualize.py runs/unet_effb0/best.pt --split test --mode worst
+
+# 8. Phân tích lỗi theo vị trí frame và cặp diễn viên DFD (runs/analysis_<split>.md)
+.venv\Scripts\python src/analyze.py runs/unet_effb0/best.pt runs/deeplabv3plus_effb0/best.pt runs/segformer_b0/best.pt --split dfd
+
+# 9. Demo Gradio (mở http://127.0.0.1:7860)
+.venv\Scripts\python src/demo.py
 ```
 Khi GPU đang bận train, thêm `--cpu` vào lệnh 6 và 7 (chậm hơn nhiều, nên dùng kèm `--fraction`).
 
@@ -248,8 +254,47 @@ Hình nằm ở `runs/<run>/figures/` và không đưa lên git, vì chứa khu�
 - **Nén mạnh làm mô hình bỏ sót chứ không tô sai.** Ở c40, precision của cả ba vẫn khoảng 0,96 nhưng recall giảm còn 0,53–0,62. Ở JPEG 10, mô hình gần như không tô gì: IoU 0,40–0,47 và báo nhầm chỉ khoảng 5%.
 - **Blur mạnh làm IoU cao giả tạo.** Từ kernel 11, cả ba mô hình chuyển dần sang "tô cả khuôn mặt": báo nhầm tăng lên 27–39% rồi 68–87% (kernel 15) và 93–99% (kernel 21). IoU của Face2Face và NeuralTextures lại tăng vì mask hai loại này phủ cả mặt. Đây là minh chứng cho việc **luôn phải báo IoU kèm tỉ lệ báo nhầm**.
 - **Noise ảnh hưởng nặng tới NeuralTextures** (IoU giảm từ khoảng 0,86 xuống 0,35–0,44 ở noise 0,15) và làm báo nhầm tăng đều.
-- **Kiểm tra chéo trên DFD kém rõ rệt với cả ba** (IoU 0,52–0,56, báo nhầm 18–21%). Kiến trúc transformer không giúp tổng quát hoá sang kiểu deepfake mới. Trong `dfd_worst_DFD.png`, nhiều frame giả của DFD **không được tô chút nào** (IoU 0). Mask DFD gần chữ nhật, khác hình dạng mask của Face2Face, FaceSwap và NeuralTextures. Với SegFormer, cả 6 ca sai nhiều nhất đều thuộc cặp diễn viên `01_02`; cần đo IoU theo từng cặp diễn viên để biết lỗi có tập trung vào một vài người hay không.
-- Frame đầu video (`frame 0000`) xuất hiện nhiều trong các ca sai nhất: 2 ca NeuralTextures và 3 ca DFD với U-Net, 4/6 ca DFD với SegFormer. Điểm này cần xem thêm: có thể ở đầu video, vùng chỉnh sửa còn yếu.
+- **Kiểm tra chéo trên DFD kém rõ rệt với cả ba** (IoU 0,52–0,56, báo nhầm 18–21%). Kiến trúc transformer không giúp tổng quát hoá sang kiểu deepfake mới. Trong `dfd_worst_DFD.png`, nhiều frame giả của DFD **không được tô chút nào** (IoU 0). Mask DFD gần chữ nhật, khác hình dạng mask của Face2Face, FaceSwap và NeuralTextures. Phân tích theo cặp diễn viên ở mục 9.6.
+- **Frame đầu và cuối video khó hơn** với NeuralTextures, Face2Face và DFD (mục 9.6).
+
+### 9.6. Phân tích lỗi (`src/analyze.py`)
+
+**Theo vị trí frame.** Mỗi video có 32 frame lấy cách đều. IoU ảnh giả ở frame đầu, frame cuối và trung bình các frame giữa:
+
+| Phương pháp | Vị trí | U-Net | DeepLabV3+ | SegFormer-B0 |
+| --- | --- | --- | --- | --- |
+| Deepfakes | đầu / giữa / cuối | 0,921 / 0,923 / 0,918 | 0,918 / 0,915 / 0,913 | 0,906 / 0,911 / 0,904 |
+| Face2Face | đầu / giữa / cuối | 0,915 / 0,933 / 0,913 | 0,920 / 0,932 / 0,927 | 0,919 / 0,938 / 0,909 |
+| FaceSwap | đầu / giữa / cuối | 0,924 / 0,930 / 0,927 | 0,898 / 0,926 / 0,911 | 0,911 / 0,923 / 0,919 |
+| NeuralTextures | đầu / giữa / cuối | 0,802 / 0,864 / 0,792 | 0,733 / 0,858 / 0,798 | 0,756 / 0,864 / 0,797 |
+| DFD | đầu / giữa / cuối | 0,489 / 0,566 / 0,439 | 0,433 / 0,541 / 0,384 | 0,433 / 0,532 / 0,382 |
+
+- NeuralTextures và DFD giảm 6–15 điểm ở frame đầu và cuối, ở **cả ba mô hình**; Deepfakes và FaceSwap gần như không đổi. Ảnh hưởng lên IoU tổng nhỏ (2/32 frame mỗi video).
+- Đã loại trừ ba nguyên nhân (đo trên video FF++ test, so frame giả với frame gốc cùng chỉ số):
+  - Diện tích mask không khác (NeuralTextures 0,327 / 0,327 / 0,325).
+  - Mức chỉnh sửa không yếu hơn: chênh lệch pixel trung bình trong mask NeuralTextures là 5,9 / 5,8 / 6,1.
+  - Mask không lệch ở frame đầu. Ở frame cuối, phần bị sửa nằm ngoài mask tăng lên (NeuralTextures 34% → 46%), nhưng tăng cả ở FaceSwap (5% → 12%), loại vẫn có IoU frame cuối bình thường, nên không giải thích được.
+- Chưa kiểm chứng: frame đầu thường là keyframe (I-frame), được nén khác các frame còn lại. Cần đọc loại frame (PyAV hoặc ffprobe) để kiểm tra.
+- Không bỏ frame đầu và cuối khỏi tập test; demo lấy trung bình xác suất 5 frame liền kề để giảm ảnh hưởng.
+
+**DFD theo cặp diễn viên** (đích_nguồn, 293 cặp):
+
+- IoU theo cặp **tương quan 0,91–0,96 giữa ba mô hình**: cặp khó thì khó với mọi kiến trúc, nên độ khó nằm ở dữ liệu chứ không ở mô hình.
+- Trung vị IoU theo cặp là 0,545; 16 cặp dưới 0,3, chỉ 4 cặp trên 0,8. Kém nhất: `07_11` (IoU khoảng 0,02 với cả ba mô hình), `27_09`, `07_26`. Tốt nhất: `12_18`, `14_12` (khoảng 0,87).
+- Không có diễn viên nào một mình kéo kết quả xuống: IoU trung bình theo diễn viên đích là 0,43–0,71, theo diễn viên nguồn là 0,42–0,66.
+- Cặp `01_02`, nơi tập trung 6 ca sai nhất của SegFormer, chỉ xếp hạng 68/293. Đó là do cách chọn hình minh hoạ, không phải cặp đặc biệt khó.
+- U-Net bỏ sót gần như hoàn toàn (IoU < 0,05) 133/3.068 video DFD (4,3%).
+
+### 9.7. Demo (`src/demo.py`)
+
+Tải video lên rồi chọn mô hình. Mỗi frame được cắt mặt giống hệt lúc train (RetinaFace, nới khung 1,3 lần, 256×256). Xác suất được lấy trung bình 5 frame liền kề rồi dán ngược lên frame gốc. Kết quả gồm video tô cam và viền vùng giả (WebM, vì OpenCV pip không ghi được H.264), biểu đồ diện tích vùng giả theo thời gian và tóm tắt. Video dài được lấy cách đều tối đa 300 frame; mỗi frame chỉ xét mặt lớn nhất.
+
+Chạy thử với U-Net trên video FF++ test (khoảng 35 giây cho 160–180 frame):
+
+| Video | Frame bị tô (> 1% mặt) | Diện tích trung bình |
+| --- | --- | --- |
+| NeuralTextures `953_974` | 100% | 33,9% |
+| Gốc `953` | 0% | 0,0% |
 
 ## 10. Tình trạng (cập nhật 13/10/2026)
 
@@ -270,7 +315,9 @@ Hình nằm ở `runs/<run>/figures/` và không đưa lên git, vì chứa khu�
 - [x] Chạy `robustness.py` và `visualize.py` đầy đủ cho U-Net và DeepLabV3+
 - [x] Chạy `robustness.py` và `visualize.py` cho SegFormer-B0
 - [x] Thêm hướng dẫn và notebook train trên Kaggle (`kaggle/train_kaggle.ipynb`)
-- [ ] Phân tích thêm (IoU theo cặp diễn viên DFD, frame đầu video), demo Gradio, báo cáo
+- [x] Phân tích lỗi theo vị trí frame và cặp diễn viên DFD (`analyze.py`)
+- [x] Demo Gradio (`demo.py`), chạy thử trên video FF++ test
+- [ ] Báo cáo, slide
 
 ## 11. Rủi ro và lưu ý
 
