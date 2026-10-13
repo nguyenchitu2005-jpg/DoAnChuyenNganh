@@ -314,6 +314,8 @@ FF++ test có 140 video thật và 558 video giả; DFD có 363 video thật và
 - Trên DFD, khoảng 1/4 đến 1/3 số video giả bị bỏ sót, vì mô hình không tô được kiểu deepfake mới (mục 9.5).
 - Ngưỡng của SegFormer thấp hơn (59%), nên nó bắt được nhiều video giả DFD hơn nhưng báo nhầm video thật nhiều hơn. AUC trên DFD của ba mô hình gần như bằng nhau (0,89–0,90).
 - Demo in kết luận kèm bằng chứng: tỉ lệ frame có vùng giả so với ngưỡng, diện tích và xác suất cao nhất, bản đồ xác suất từng pixel, bảng độ tin cậy ở trên, và cảnh báo khi tỉ lệ nằm gần ngưỡng (±10 điểm).
+- Dưới ngưỡng, quy tắc **không chứng minh được video là thật**. Vì vậy demo có 3 mức: **GIẢ** (≥ ngưỡng), **NGHI NGỜ** (nhiều frame bị tô hơn 95% video thật của val: U-Net ≥ 47%, DeepLabV3+ ≥ 38%, SegFormer ≥ 41%), và **KHÔNG ĐỦ DẤU HIỆU GIẢ**.
+- **Hạn chế: video do AI tạo trọn vẹn** (video TikTok khuôn mặt AI, thử ngày 14/10). U-Net chỉ tô vùng giả ở 27% số frame, thành từng đợt, nên kết luận là không đủ dấu hiệu. Mô hình học dấu vết ghép/sửa mặt của FF++; video sinh trọn khung hình không có đường ghép. Mô hình cũng không phân biệt được filter làm đẹp với deepfake (một video TikTok có filter bị tô 99% số frame).
 - Demo dùng tới 300 frame đã làm trơn thay vì 32 frame. Kiểm tra trên 12 video FF++ test ngẫu nhiên (2 video mỗi phương pháp giả, 4 video thật) với U-Net: **12/12 cùng kết luận**. Làm trơn chỉ làm tỉ lệ frame tăng nhẹ ở video giả (ví dụ 90,6% lên 96,3%) và giảm ở video thật (3,1% xuống 0%).
 
 ## 10. Tình trạng (cập nhật 13/10/2026)
