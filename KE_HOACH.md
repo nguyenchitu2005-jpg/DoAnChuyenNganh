@@ -314,7 +314,6 @@ FF++ test có 140 video thật và 558 video giả; DFD có 363 video thật và
 - Trên DFD, khoảng 1/4 đến 1/3 số video giả bị bỏ sót, vì mô hình không tô được kiểu deepfake mới (mục 9.5).
 - Ngưỡng của SegFormer thấp hơn (59%), nên nó bắt được nhiều video giả DFD hơn nhưng báo nhầm video thật nhiều hơn. AUC trên DFD của ba mô hình gần như bằng nhau (0,89–0,90).
 - Demo in kết luận kèm bằng chứng: tỉ lệ frame có vùng giả so với ngưỡng, diện tích và xác suất cao nhất, bản đồ xác suất từng pixel, bảng độ tin cậy ở trên, và cảnh báo khi tỉ lệ nằm gần ngưỡng (±10 điểm).
-- **Gộp 3 mô hình không giúp**: lấy trung bình điểm video của ba mô hình, AUC trên DFD chỉ tăng từ 0,903 lên 0,908, và tỉ lệ bắt được video giả không tăng (67,9%). Dùng diện tích trung bình thay cho tỉ lệ frame còn kém hơn (AUC DFD 0,86–0,88). Ba mô hình bỏ sót cùng những video, nên phải đổi dữ liệu hoặc cách train chứ không phải đổi mô hình (thí nghiệm Self-Blended Images, `configs/unet_sbi.yaml`).
 - Demo dùng tới 300 frame đã làm trơn thay vì 32 frame. Kiểm tra trên 12 video FF++ test ngẫu nhiên (2 video mỗi phương pháp giả, 4 video thật) với U-Net: **12/12 cùng kết luận**. Làm trơn chỉ làm tỉ lệ frame tăng nhẹ ở video giả (ví dụ 90,6% lên 96,3%) và giảm ở video thật (3,1% xuống 0%).
 
 ## 10. Tình trạng (cập nhật 13/10/2026)
