@@ -1,0 +1,20 @@
+# U-Net như configs/unet.yaml, thêm ảnh giả tự ghép (Self-Blended Images) khi train
+name: unet_effb0_sbi
+arch: unet
+encoder: efficientnet-b0
+data_root: data/faces
+index_dir: data/index
+image_size: 256
+batch_size: 16
+epochs: 10
+lr: 0.0003
+weight_decay: 0.0001
+samples_per_epoch: null   # null = bằng số frame train (khoảng 115 nghìn)
+bce_weight: 1.0
+dice_weight: 1.0
+threshold: 0.5
+num_workers: 6
+seed: 42
+# một nửa số lần đọc frame thật được biến thành ảnh giả tự ghép (dataset.self_blend):
+# mỗi batch khoảng 25% thật, 25% SBI, 50% giả FF++
+sbi_prob: 0.5

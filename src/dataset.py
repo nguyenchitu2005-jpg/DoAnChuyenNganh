@@ -11,7 +11,7 @@ from albumentations.pytorch import ToTensorV2
 from torch.utils.data import Dataset, WeightedRandomSampler
 
 METHODS = ['original', 'Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures',
-           'DFD', 'actors']
+           'DFD', 'actors', 'SBI']
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
 MASK_THRESHOLD = 127  # mask đã nhị phân 0/255 lúc tiền xử lý
@@ -61,6 +61,46 @@ def _degrade(spec):
     raise ValueError('unknown degradation: ' + spec)
 
 
+def self_blend(image):
+    """Self-Blended Image (Shiohara & Yamasaki, CVPR 2022), bản không cần landmark.
+
+    Ảnh mặt thật được biến đổi nhẹ (màu, độ nét, co giãn, dịch) rồi dán lại lên chính
+    nó theo một elip ngẫu nhiên có méo biên và biên mờ: ảnh giả có mask pixel chính xác,
+    mô hình phải học dấu vết đường ghép chung của deepfake thay vì riêng 4 phương pháp.
+    Mặt nằm giữa ảnh cắt (khung mặt nới 1,3 lần) nên elip đặt quanh tâm ảnh.
+    Trả về ảnh uint8 và mask 0/1.
+    """
+    h, w = image.shape[:2]
+    r = np.random.uniform
+    core = np.zeros((h, w), np.float32)
+    cv2.ellipse(core, (int(w * r(0.45, 0.55)), int(h * r(0.45, 0.6))),
+                (int(w * r(0.2, 0.32)), int(h * r(0.26, 0.38))), r(-15, 15), 0, 360,
+                1, -1)
+    # méo biên: trường dịch chuyển mượt, biên độ 5-20 px
+    grid = np.mgrid[0:h, 0:w].astype(np.float32)
+    shift = []
+    for _ in range(2):
+        f = cv2.GaussianBlur(np.random.randn(h, w).astype(np.float32), (0, 0), 20)
+        shift.append(f / (np.abs(f).max() + 1e-6) * r(5, 20))
+    core = cv2.remap(core, grid[1] + shift[0], grid[0] + shift[1], cv2.INTER_LINEAR)
+    k = 2 * np.random.randint(7, 23) + 1
+    soft = cv2.GaussianBlur(core, (k, k), 0)
+    alpha = soft * np.random.choice([0.25, 0.5, 0.75, 1, 1, 1])
+
+    src = image.astype(np.float32) * r(0.9, 1.1) + r(-20, 20, 3)
+    if np.random.rand() < 0.5:
+        src = cv2.GaussianBlur(src, (0, 0), r(0.5, 1.5))
+    else:   # làm nét (unsharp mask)
+        src = cv2.addWeighted(src, 1.6, cv2.GaussianBlur(src, (0, 0), 2), -0.6, 0)
+    s = r(0.95, 1.05)
+    m = cv2.getRotationMatrix2D((w / 2, h / 2), 0, s)
+    m[:, 2] += r(-0.03, 0.03, 2) * (w, h)
+    src = cv2.warpAffine(src, m, (w, h), borderMode=cv2.BORDER_REFLECT)
+
+    out = src * alpha[..., None] + image * (1 - alpha[..., None])
+    return np.clip(out, 0, 255).astype(np.uint8), (soft > 0.5).astype(np.uint8)
+
+
 def _to_tensor(normalize):
     return ([A.Normalize(MEAN, STD)] if normalize else []) + [ToTensorV2()]
 
@@ -70,9 +110,11 @@ class FaceSegDataset(Dataset):
 
     Frame thật không có file mask: dùng mask đen toàn bộ.
     `fraction` < 1 lấy ngẫu nhiên một phần video (giữ trọn các frame của video).
+    `sbi_prob` > 0 (chỉ dùng khi train): mỗi lần đọc một frame thật, với xác suất này
+    biến nó thành ảnh giả tự ghép (`self_blend`), nhãn giả, phương pháp 'SBI'.
     """
 
-    def __init__(self, csv_path, root, transform, fraction=1.0, seed=0):
+    def __init__(self, csv_path, root, transform, fraction=1.0, seed=0, sbi_prob=0.0):
         with open(csv_path, newline='', encoding='utf-8') as f:
             rows = [(r['frame'], r['mask'], METHODS.index(r['method']),
                      r['method'] + '/' + r['video'], int(r['label']))
@@ -85,6 +127,7 @@ class FaceSegDataset(Dataset):
         self.rows = rows
         self.root = root
         self.transform = transform
+        self.sbi_prob = sbi_prob
 
     def __len__(self):
         return len(self.rows)
@@ -100,6 +143,9 @@ class FaceSegDataset(Dataset):
             mask = cv2.imread(os.path.join(self.root, mask_path),
                               cv2.IMREAD_GRAYSCALE)
             mask = (mask > MASK_THRESHOLD).astype(np.uint8)
+        elif np.random.rand() < self.sbi_prob:
+            image, mask = self_blend(image)
+            label, method = 1, METHODS.index('SBI')
         else:
             mask = np.zeros(image.shape[:2], np.uint8)
         out = self.transform(image=image, mask=mask)

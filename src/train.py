@@ -71,7 +71,8 @@ def main():
     train_ds = FaceSegDataset(os.path.join(cfg['index_dir'], 'train.csv'),
                               cfg['data_root'],
                               train_transform(cfg['image_size']),
-                              fraction=cfg['fraction'], seed=cfg['seed'])
+                              fraction=cfg['fraction'], seed=cfg['seed'],
+                              sbi_prob=cfg.get('sbi_prob', 0.0))
     sampler = balanced_sampler(train_ds, cfg.get('samples_per_epoch'),
                                seed=cfg['seed'])
     train_loader = DataLoader(train_ds, batch_size=cfg['batch_size'],
