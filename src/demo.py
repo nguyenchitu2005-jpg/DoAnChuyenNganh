@@ -164,14 +164,22 @@ def verdict(model_name, n_frames, area, peak, t):
         rule = json.load(f)
     # quy tắc chọn trên 32 frame/video chưa làm trơn; demo dùng tới 300 frame đã
     # làm trơn nên tỉ lệ frame có thể lệch chút ít so với lúc chọn ngưỡng
-    fake = flagged >= rule['threshold']
+    # dưới ngưỡng không chứng minh được video là thật, nên không ghi "THẬT"
+    if flagged >= rule['threshold']:
+        label = '🟠 GIẢ (có vùng mặt bị chỉnh sửa)'
+    elif flagged >= rule['real_p95']:
+        label = ('🟡 NGHI NGỜ (nhiều frame bị tô hơn 95% video thật, '
+                 'nhưng chưa tới ngưỡng kết luận giả)')
+    else:
+        label = '⚪ KHÔNG ĐỦ DẤU HIỆU GIẢ'
     k = int(np.nanargmax(peak))
     lines = [
-        head + '## Kết luận: {}'.format('🟠 GIẢ (có vùng mặt bị chỉnh sửa)' if fake
-                                        else '🔵 THẬT (không thấy vùng bị chỉnh sửa)'),
+        head + '## Kết luận: ' + label,
         '**Bằng chứng**',
-        '- **{:.0%}** số frame có vùng giả (> 1% diện tích mặt). Ngưỡng kết luận giả: '
-        '≥ **{:.0%}** số frame, chọn trên tập FF++ val.'.format(flagged, rule['threshold']),
+        '- **{:.0%}** số frame ({}/{}) có vùng giả (> 1% diện tích mặt). Ngưỡng kết luận '
+        'giả: ≥ **{:.0%}** số frame, chọn trên tập FF++ val; 95% video thật của val '
+        'có tỉ lệ dưới {:.0%}.'.format(flagged, int((area > FA_AREA).sum()), len(area),
+                                       rule['threshold'], rule['real_p95']),
         '- Diện tích vùng giả trung bình **{:.1%}** mặt; xác suất giả cao nhất **{:.2f}** '
         '(giây {:.1f}).'.format(np.mean(area), peak[k], t[k]),
         '- Vị trí từng pixel bị cho là giả: xem bản đồ xác suất bên dưới và video kết quả.',
@@ -186,8 +194,9 @@ def verdict(model_name, n_frames, area, peak, t):
             rule['test']['real_correct'], rule['test']['fake_correct']),
         '| DFD (deepfake của Google, nguồn khác) | {:.1%} | {:.1%} |'.format(
             rule['dfd']['real_correct'], rule['dfd']['fake_correct']),
-        '', 'Mô hình chỉ học từ FF++ (video tin tức, 4 phương pháp giả). Video quay bằng '
-            'điện thoại/webcam hoặc deepfake tạo bằng công cụ khác có thể bị kết luận sai.',
+        '', 'Mô hình chỉ học từ FF++ (video tin tức, 4 phương pháp ghép/sửa mặt). Video '
+            'do AI tạo trọn vẹn, filter làm đẹp, video quay bằng điện thoại/webcam hoặc '
+            'deepfake tạo bằng công cụ khác có thể bị bỏ sót hoặc kết luận sai.',
     ]
     return '\n'.join(lines)
 

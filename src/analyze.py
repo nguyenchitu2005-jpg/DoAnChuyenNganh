@@ -140,7 +140,10 @@ def video_rule(checkpoint):
     val_s, val_y = video_scores(frame_scores(checkpoint, 'val'))
     grid = np.arange(1, 33) / 32   # 32 frame mỗi video
     t = max(grid, key=lambda g: rule_stats(val_s, val_y, g)['balanced_acc'])
-    rule = {'threshold': float(t), 'fa_area': FA_AREA}
+    # mức "nghi ngờ": cao hơn 95% video thật của val (dưới ngưỡng thì chưa chứng minh
+    # được là thật, chỉ là không đủ dấu hiệu giả)
+    rule = {'threshold': float(t), 'fa_area': FA_AREA,
+            'real_p95': float(np.percentile(val_s[val_y == 0], 95))}
     for split in ('val', 'test', 'dfd'):
         rule[split] = rule_stats(*video_scores(frame_scores(checkpoint, split)), t)
     with open(os.path.join(os.path.dirname(checkpoint), 'video_rule.json'), 'w',
