@@ -229,7 +229,8 @@ with gr.Blocks(title='Phát hiện vùng mặt bị chỉnh sửa') as app:
             summary_out = gr.Markdown()
     gallery_out = gr.Gallery(
         label='Từng pixel: ảnh mặt | xác suất giả (trắng = 0, xanh đậm = 1) | '
-              'vùng vượt ngưỡng 0,5 (cam)', columns=2, height='auto')
+              'vùng vượt ngưỡng 0,5 (cam)', columns=2, height='auto',
+        object_fit='contain')   # mặc định 'cover' cắt ảnh 3 ô, chỉ còn ô giữa
     plot_out = gr.LinePlot(x='Thời gian (giây)', y='Giá trị (%)', color='Chỉ số',
                            label='Vùng giả và xác suất giả theo thời gian',
                            y_lim=[0, 100])
