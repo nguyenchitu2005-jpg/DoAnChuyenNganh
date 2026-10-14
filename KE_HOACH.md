@@ -324,6 +324,36 @@ FF++ test có 140 video thật và 558 video giả; DFD có 363 video thật và
 - **Hạn chế: video do AI tạo trọn vẹn** (video TikTok khuôn mặt AI, thử ngày 14/10). U-Net chỉ tô vùng giả ở 27% số frame, thành từng đợt, nên kết luận là không đủ dấu hiệu. Mô hình học dấu vết ghép/sửa mặt của FF++; video sinh trọn khung hình không có đường ghép. Mô hình cũng không phân biệt được filter làm đẹp với deepfake (một video TikTok có filter bị tô 99% số frame).
 - Demo dùng tới 300 frame đã làm trơn thay vì 32 frame. Kiểm tra trên 12 video FF++ test ngẫu nhiên (2 video mỗi phương pháp giả, 4 video thật) với U-Net: **12/12 cùng kết luận**. Làm trơn chỉ làm tỉ lệ frame tăng nhẹ ở video giả (ví dụ 90,6% lên 96,3%) và giảm ở video thật (3,1% xuống 0%).
 
+### 9.9. Mô hình 2: phát hiện video do AI tạo (`preprocess_ai.py`, `train_ai.py`)
+
+Bài toán khác Mô hình 1: video do AI tạo trọn vẹn không có mask (mọi pixel đều do AI sinh), nên chỉ phân loại thật hay AI theo từng frame rồi gộp theo video. Lời giải thích là Grad-CAM, tức **vùng mô hình dựa vào để quyết định**; nó không phải vùng bị làm giả và không đo được bằng IoU.
+
+- **Dữ liệu AI**: [TalkingHeadBench](https://huggingface.co/datasets/luchaoqi/TalkingHeadBench) (WACV 2026, license MIT), gồm ảnh chân dung FFHQ được AI làm cử động. 6 bộ sinh dùng để train/val/test với người không trùng nhau: LivePortrait, AniPortrait (Audio/Video), Hallo, Hallo2, EmoPortrait. Hallo3 và MAGI-1 (thương mại) chỉ dùng để test. Chỉ tải phần video giả (5,5 GB).
+- **Dữ liệu thật**: bộ dữ liệu không đóng gói video thật. Dùng FF++ youtube theo split chính thức (không lẫn với tập test của Mô hình 1) và video diễn viên DFD, chia theo diễn viên: 01–16 train, 17–20 val, 21–28 test.
+- **Mô hình**: EfficientNet-B0 pretrained ImageNet (timm), mặt cắt bằng RetinaFace như Mô hình 1, 16 frame mỗi video AI. Điểm video là trung bình xác suất các frame; ngưỡng chọn trên val.
+
+**Hai "đường tắt" đã phát hiện và chặn**:
+1. **Viền đen**: video AI là cận cảnh mặt nên khung cắt nới 1,3 lần bị tràn ra ngoài ảnh. 74% ảnh AI có viền đen, so với 6% ảnh thật. Cách chặn: Mô hình 2 chỉ dùng khung mặt (còn 10% / 0%), và khi train tô đen ngẫu nhiên mép ảnh ở cả hai lớp.
+2. **Nguồn video**: khi chỉ dùng video thật FF++ (lần 1, `runs/ai_effb0_ffonly`), mô hình học "không phải video tin tức = AI" và **chỉ nhận đúng 28,4% video thật DFD**. Thêm diễn viên DFD vào lớp thật (lần 2, `runs/ai_effb0`) thì nhận đúng 99,0%.
+
+| Tập kiểm tra (theo video) | Lần 1: thật chỉ có FF++ | Lần 2: thật = FF++ + diễn viên DFD |
+| --- | --- | --- |
+| Thật FF++ test (140) | 99,3% | 99,3% |
+| AI, bộ sinh đã gặp, người mới (845) | 99,5% | 98,9% |
+| AI, Hallo3 chưa gặp (10) | 100% | 90% |
+| AI, MAGI-1 thương mại chưa gặp (66) | 100% | 100% |
+| **Thật, diễn viên DFD chưa gặp (101)** | **28,4%** | **99,0%** |
+
+Lần 2: ngưỡng 0,25, best ở epoch 4; AUC theo video là 0,999 (test) và 0,998 (extra).
+
+**Thử trên video ngoài bộ dữ liệu (14/10, video TikTok và video tự quay bằng điện thoại): chưa đạt.**
+- Video tự quay (thật) bị Mô hình 2 cho là AI (điểm 0,67).
+- Video TikTok khuôn mặt AI mà người dùng cho là giả có điểm 0,00.
+
+Lý do: lớp thật chỉ có 2 nguồn (tin tức, diễn viên quay theo kịch bản), và lớp AI chỉ có kiểu talking-head làm từ ảnh chân dung. Video điện thoại, filter làm đẹp và các công cụ AI khác nằm ngoài cả hai lớp. Hướng tiếp theo:
+- Thêm video thật đa dạng: CelebV-HQ (tải từ YouTube) hoặc video tự quay có nhãn.
+- Thêm video AI loại khác: GenVideo-100K hoặc video tự tạo bằng công cụ AI có nhãn.
+
 ## 10. Tình trạng (cập nhật 13/10/2026)
 
 - [x] Môi trường: Python 3.12 (`.venv`), PyTorch 2.14 CUDA 13.0, segmentation_models_pytorch, transformers, albumentations, batch-face
@@ -346,6 +376,8 @@ FF++ test có 140 video thật và 558 video giả; DFD có 363 video thật và
 - [x] Phân tích lỗi theo vị trí frame và cặp diễn viên DFD (`analyze.py`)
 - [x] Demo Gradio (`demo.py`), chạy thử trên video FF++ test
 - [x] Kết luận thật/giả cả video kèm bằng chứng (ngưỡng chọn trên val, đo trên test và DFD)
+- [x] Mô hình 2 (video do AI tạo): TalkingHeadBench + EfficientNet-B0 + Grad-CAM, chặn 2 đường tắt, đưa vào demo
+- [ ] Mô hình 2: thêm video thật và video AI đa dạng hơn (video điện thoại/TikTok vẫn sai)
 - [ ] Báo cáo, slide
 
 ## 11. Rủi ro và lưu ý
