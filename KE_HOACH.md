@@ -289,7 +289,7 @@ Hình nằm ở `runs/<run>/figures/` và không đưa lên git, vì chứa khu�
 
 ### 9.7. Demo (`src/demo.py`)
 
-Tải video lên rồi chọn mô hình. Ngoài video tô vùng giả, demo hiện 6 frame dạng ảnh mặt | bản đồ xác suất từng pixel | vùng vượt ngưỡng, và biểu đồ diện tích vùng giả cùng xác suất lớn nhất trên mặt theo thời gian. Mỗi frame được cắt mặt giống hệt lúc train (RetinaFace, nới khung 1,3 lần, 256×256). Xác suất được lấy trung bình 5 frame liền kề rồi dán ngược lên frame gốc. Kết quả gồm video tô cam và viền vùng giả (WebM, vì OpenCV pip không ghi được H.264), biểu đồ diện tích vùng giả theo thời gian và tóm tắt. Video dài được lấy cách đều tối đa 300 frame; mỗi frame chỉ xét mặt lớn nhất.
+Tải video lên rồi chọn mô hình. Ngoài video tô vùng giả, demo hiện 6 frame dạng ảnh mặt | bản đồ xác suất từng pixel | vùng vượt ngưỡng, và biểu đồ diện tích vùng giả cùng xác suất lớn nhất trên mặt theo thời gian. Mỗi frame được cắt mặt giống hệt lúc train (RetinaFace, nới khung 1,3 lần, 256×256). Xác suất được lấy trung bình 5 frame liền kề rồi dán ngược lên frame gốc. Kết quả gồm video phủ đỏ bán trong suốt (alpha 0,5) và viền vùng giả (WebM, vì OpenCV pip không ghi được H.264), biểu đồ diện tích vùng giả theo thời gian và tóm tắt. Video dài được lấy cách đều tối đa 300 frame; mỗi frame chỉ xét mặt lớn nhất.
 
 Chạy thử với U-Net trên video FF++ test (khoảng 35 giây cho 160–180 frame):
 

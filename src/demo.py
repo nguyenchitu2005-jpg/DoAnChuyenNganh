@@ -27,7 +27,7 @@ MAX_FRAMES = 300       # video dài hơn thì lấy cách đều 300 frame
 SCALE, SIZE = 1.3, 256  # giống lúc tiền xử lý dữ liệu train
 SMOOTH = 5            # số frame lấy trung bình xác suất
 FA_AREA = 0.01        # giống metrics.py: frame bị tô > 1% diện tích mặt là có vùng giả
-COLOR = (52, 104, 235)  # BGR của #eb6834 (cam, màu "tô thừa" trong visualize.py)
+COLOR = (36, 36, 220)  # BGR, đỏ: phủ bán trong suốt (alpha 0,5) lên vùng dự đoán
 CHECKPOINTS = {os.path.basename(os.path.dirname(p)): p
                for p in sorted(glob.glob('runs/*/best.pt')) if 'smoke' not in p}
 _models = {}
@@ -118,7 +118,7 @@ def run(video, model_name, progress=gr.Progress()):
             area[i] = (prob > thr).mean()
             mask = paste_back(prob, boxes[i], f.shape) > thr
             f[mask] = (0.5 * f[mask] + 0.5 * np.array(COLOR)).astype(np.uint8)
-            # viền đậm vì lớp tô cam khó thấy trên màu da
+            # viền đậm để vùng phủ đỏ vẫn rõ trên màu da
             contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL,
                                            cv2.CHAIN_APPROX_SIMPLE)
             cv2.drawContours(f, contours, -1, COLOR, 3)
@@ -225,7 +225,7 @@ def panel(crop, prob, thr):
 
 with gr.Blocks(title='Phát hiện vùng mặt bị chỉnh sửa') as app:
     gr.Markdown('# Phát hiện vùng mặt bị chỉnh sửa (deepfake segmentation)\n'
-                'Tải video lên; vùng tô cam là vùng mô hình cho là bị chỉnh sửa.')
+                'Tải video lên; vùng phủ đỏ là vùng mô hình cho là bị chỉnh sửa.')
     with gr.Row():
         with gr.Column():
             video_in = gr.Video(label='Video đầu vào')
@@ -238,7 +238,7 @@ with gr.Blocks(title='Phát hiện vùng mặt bị chỉnh sửa') as app:
             summary_out = gr.Markdown()
     gallery_out = gr.Gallery(
         label='Từng pixel: ảnh mặt | xác suất giả (trắng = 0, xanh đậm = 1) | '
-              'vùng vượt ngưỡng 0,5 (cam)', columns=2, height='auto',
+              'vùng vượt ngưỡng 0,5 (đỏ)', columns=2, height='auto',
         object_fit='contain')   # mặc định 'cover' cắt ảnh 3 ô, chỉ còn ô giữa
     plot_out = gr.LinePlot(x='Thời gian (giây)', y='Giá trị (%)', color='Chỉ số',
                            label='Vùng giả và xác suất giả theo thời gian',
