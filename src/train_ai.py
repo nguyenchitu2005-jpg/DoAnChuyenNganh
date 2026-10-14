@@ -7,6 +7,10 @@ Mỗi epoch đánh giá AUC theo frame trên val, lưu best.pt theo AUC theo vid
 bằng; đo trên test (bộ sinh đã gặp, danh tính mới) và extra (Hallo3, MAGI-1: bộ sinh chưa
 gặp). Kết quả: runs/ai_effb0/{best.pt, history.jsonl, video_rule.json}.
 Grad-CAM (`gradcam`): vùng mô hình dựa vào để quyết định, không phải vùng bị làm giả.
+
+Chống học "đường tắt": video AI là cận cảnh mặt nên khung cắt nới 1,3 lần hay tràn ra
+ngoài ảnh, tô đen (74% ảnh AI có viền đen, ảnh thật 6%). Mô hình 2 chỉ dùng khung mặt
+(cắt giữa 196 px, còn 10% / 0%), và khi train tô đen ngẫu nhiên mép ảnh ở cả hai lớp.
 """
 import argparse
 import csv
@@ -15,6 +19,7 @@ import os
 import random
 from collections import defaultdict
 
+import albumentations as A
 import cv2
 import numpy as np
 import timm
@@ -27,12 +32,38 @@ from tqdm import tqdm
 from dataset import balanced_sampler, eval_transform, train_transform
 
 RUN_DIR = 'runs/ai_effb0'
+FACE = 196   # khung mặt RetinaFace trong ảnh cắt 256 (nới 1,3 lần)
+
+
+def ai_transform(train):
+    """Cắt giữa đúng khung mặt rồi biến đổi như Mô hình 1 (resize lại 256)."""
+    inner = train_transform(256) if train else eval_transform(256)
+    return A.Compose([A.CenterCrop(FACE, FACE), inner])
+
+
+def random_border(image, p=0.3):
+    """Tô đen một dải 4-40 px ở 1-2 mép ngẫu nhiên, áp cho cả ảnh thật và AI."""
+    if np.random.rand() >= p:
+        return image
+    image = image.copy()
+    h, w = image.shape[:2]
+    for side in np.random.choice(4, np.random.randint(1, 3), replace=False):
+        k = np.random.randint(4, 41) + (h - FACE) // 2   # tính cả phần bị cắt giữa
+        if side == 0:
+            image[:k] = 0
+        elif side == 1:
+            image[-k:] = 0
+        elif side == 2:
+            image[:, :k] = 0
+        else:
+            image[:, -k:] = 0
+    return image
 
 
 class FrameDataset(Dataset):
     """Ảnh mặt 256×256 và nhãn (1 = do AI tạo); `fraction` < 1 lấy một phần video."""
 
-    def __init__(self, split, transform, fraction=1.0):
+    def __init__(self, split, transform, fraction=1.0, border=False):
         with open(os.path.join('data/index_ai', split + '.csv'), newline='',
                   encoding='utf-8') as f:
             self.rows = [(r['frame'], r['source'], r['video'], int(r['label']))
@@ -42,6 +73,7 @@ class FrameDataset(Dataset):
             keep = set(random.Random(0).sample(videos, round(len(videos) * fraction)))
             self.rows = [r for r in self.rows if r[2] in keep]
         self.transform = transform
+        self.border = border
 
     def __len__(self):
         return len(self.rows)
@@ -52,6 +84,8 @@ class FrameDataset(Dataset):
     def __getitem__(self, i):
         image = cv2.cvtColor(cv2.imread(os.path.join('data', self.rows[i][0])),
                              cv2.COLOR_BGR2RGB)
+        if self.border:
+            image = random_border(image)
         return self.transform(image=image)['image'], self.rows[i][3]
 
 
@@ -125,8 +159,8 @@ def main():
     torch.manual_seed(42)
     os.makedirs(RUN_DIR, exist_ok=True)
 
-    train_ds = FrameDataset('train', train_transform(256), args.fraction)
-    loaders = {s: FrameDataset(s, eval_transform(256), args.fraction)
+    train_ds = FrameDataset('train', ai_transform(True), args.fraction, border=True)
+    loaders = {s: FrameDataset(s, ai_transform(False), args.fraction)
                for s in ('val', 'test', 'extra')}
     sampler = balanced_sampler(train_ds, seed=42)   # video thật ít hơn video AI
     loader = DataLoader(train_ds, batch_size=args.batch_size, sampler=sampler,

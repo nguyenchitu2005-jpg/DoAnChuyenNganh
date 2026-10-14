@@ -88,8 +88,8 @@ def paste_back(prob, box, shape):
 
 
 @torch.no_grad()
-def predict(crops, model, device):
-    tf = eval_transform(SIZE)
+def predict(crops, model, device, tf=None):
+    tf = tf or eval_transform(SIZE)
     probs = []
     for k in range(0, len(crops), 32):
         x = torch.stack([tf(image=cv2.cvtColor(c, cv2.COLOR_BGR2RGB))['image']
@@ -121,7 +121,8 @@ def run(video, model_name, progress=gr.Progress()):
     probs = predict(crops, model, device)
     ai_model, ai_rule = get_ai_model(device)
     # bộ phân loại ra (B, 1) nên predict trả về một xác suất mỗi frame
-    ai_probs = predict(crops, ai_model, device) if ai_model and crops else None
+    ai_probs = (predict(crops, ai_model, device, train_ai.ai_transform(False))
+                if ai_model and crops else None)
     # trung bình xác suất 5 frame liền kề (ảnh mặt đã căn theo khung mặt nên gần khớp
     # nhau), giảm nhấp nháy và ảnh hưởng của frame khó như frame đầu/cuối video
     if len(probs):
@@ -176,7 +177,8 @@ def run(video, model_name, progress=gr.Progress()):
             t[found[k]], peak[found[k]], area[found[k]])
         cam = None
         if ai_probs is not None:
-            x = eval_transform(SIZE)(image=cv2.cvtColor(crops[k], cv2.COLOR_BGR2RGB))
+            x = train_ai.ai_transform(False)(
+                image=cv2.cvtColor(crops[k], cv2.COLOR_BGR2RGB))
             cam, _ = train_ai.gradcam(ai_model, x['image'][None].to(device))
             caption += ', điểm AI {:.2f}'.format(ai_probs[k])
         gallery.append((panel(crops[k], probs[k], thr, cam), caption))
@@ -195,7 +197,8 @@ def ai_verdict(ai_probs, rule):
     seen = ', '.join('{} {:.0%}'.format(k, v) for k, v in test['correct_by_source'].items()
                      if k != 'real_ff++')
     unseen = ', '.join('{} {:.0%}'.format(k, v)
-                       for k, v in extra['correct_by_source'].items())
+                       for k, v in extra['correct_by_source'].items()
+                       if not k.startswith('real'))
     return '\n'.join([
         '## Mô hình 2: ' + label,
         '**Bằng chứng**',
@@ -210,6 +213,7 @@ def ai_verdict(ai_probs, rule):
         '| Video AI, bộ sinh đã gặp, người mới | {:.1%} ({}) |'.format(
             test['ai_correct'], seen),
         '| Video AI, bộ sinh chưa gặp | {:.1%} ({}) |'.format(extra['ai_correct'], unseen),
+        '| Video thật khác nguồn (diễn viên DFD) | {:.1%} |'.format(extra['real_correct']),
         '', 'Mô hình 2 học từ video talking-head (ảnh chân dung được AI làm cử động). Video '
             'AI loại khác (Sora, filter AI...) có thể bị bỏ sót.',
     ])
@@ -292,7 +296,10 @@ def panel(crop, prob, thr, cam=None):
     if cam is not None:
         # thang màu khác hẳn Mô hình 1 để không đọc nhầm thành "vùng giả"
         color = (colormaps['plasma'](cam)[..., :3] * 255).astype(np.uint8)
-        tiles += [gap, (0.5 * rgb + 0.5 * color).astype(np.uint8)]
+        # Mô hình 2 chỉ nhìn khung mặt (cắt giữa), nên phủ lên đúng phần đó
+        c = (SIZE - train_ai.FACE) // 2
+        face = cv2.resize(rgb[c:SIZE - c, c:SIZE - c], (SIZE, SIZE))
+        tiles += [gap, (0.5 * face + 0.5 * color).astype(np.uint8)]
     return np.hstack(tiles)
 
 
