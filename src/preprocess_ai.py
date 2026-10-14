@@ -4,9 +4,11 @@ Chạy: python src/preprocess_ai.py
 Video giả (AI tạo): data/TalkingHeadBench/fake/<bộ sinh>/<split>/*.mp4, cắt mặt giống hệt
 Mô hình 1 (preprocess.process_video: RetinaFace, nới 1,3 lần, 256×256), 16 frame/video,
 lưu ở data/faces_ai/. Split 'extra' chỉ dùng để test khác nguồn: video AI của
-additional_dataset (Hallo3, MAGI-1, bộ sinh chưa gặp) và video thật diễn viên DFD.
+additional_dataset (Hallo3, MAGI-1, bộ sinh chưa gặp) và video thật của diễn viên DFD
+chưa gặp (21-28).
 Video thật: FF++ youtube theo real_dataset_split_official_ff++.json (split chính thức FF++,
-không lẫn với tập test của Mô hình 1); ảnh mặt đã có sẵn trong data/faces.
+không lẫn với tập test của Mô hình 1) và video diễn viên DFD (01-16 train, 17-20 val,
+21-28 extra); ảnh mặt đã có sẵn trong data/faces.
 Kết quả: data/index_ai/{train,val,test,extra}.csv, cột frame (tương đối với data/),
 source, video, label (1 = do AI tạo).
 """
@@ -69,13 +71,15 @@ def main():
             rel = 'faces/original_sequences/youtube/frames/' + video
             for f in sorted(os.listdir(os.path.join('data', rel))):
                 rows[split].append((rel + '/' + f, 'real_ff++', video, 0))
-    # video thật khác nguồn (diễn viên DFD) để kiểm tra mô hình có học "nguồn video"
-    # (tin tức FF++ khác chân dung FFHQ) thay vì dấu vết AI không
+    # video thật thứ hai, khác nguồn (diễn viên DFD), chia theo diễn viên: chỉ có video
+    # tin tức FF++ thì mô hình học "không phải tin tức = AI" (đúng 28% video thật DFD)
     actors = 'faces/original_sequences/actors/frames'
     for video in sorted(os.listdir(os.path.join('data', actors))):
+        actor = int(video.split('__')[0])
+        split = 'train' if actor <= 16 else 'val' if actor <= 20 else 'extra'
         for f in sorted(os.listdir(os.path.join('data', actors, video))):
-            rows['extra'].append((actors + '/' + video + '/' + f, 'real_dfd_actors',
-                                  video, 0))
+            rows[split].append((actors + '/' + video + '/' + f, 'real_dfd_actors',
+                                video, 0))
 
     os.makedirs('data/index_ai', exist_ok=True)
     for split, rs in rows.items():

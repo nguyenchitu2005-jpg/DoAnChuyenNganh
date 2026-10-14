@@ -35,7 +35,8 @@ AI_RUN = train_ai.RUN_DIR
 # mô hình segmentation (Mô hình 1); Mô hình 2 ở AI_RUN là bộ phân loại, không chọn ở đây
 CHECKPOINTS = {os.path.basename(os.path.dirname(p)): p
                for p in sorted(glob.glob('runs/*/best.pt'))
-               if 'smoke' not in p and os.path.dirname(p).replace(os.sep, '/') != AI_RUN}
+               if 'smoke' not in p
+               and not os.path.basename(os.path.dirname(p)).startswith('ai_')}
 _models = {}
 
 
