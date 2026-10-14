@@ -148,6 +148,12 @@ tensorboard --logdir runs
 # Ngưỡng kết luận thật/giả theo video cho demo (runs/<run>/video_rule.json)
 .venv\Scripts\python src/analyze.py runs/unet_effb0/best.pt runs/deeplabv3plus_effb0/best.pt runs/segformer_b0/best.pt --split video
 
+# Mô hình 2 (video do AI tạo): tải video giả TalkingHeadBench (khoảng 5,9 GB, không tải audio),
+# cắt mặt, train EfficientNet-B0, chọn ngưỡng trên val (runs/ai_effb0/)
+.venv\Scripts\python -c "from huggingface_hub import snapshot_download; snapshot_download('luchaoqi/TalkingHeadBench', repo_type='dataset', local_dir='data/TalkingHeadBench', allow_patterns=['fake/*', 'real/*', 'README.md'])"
+.venv\Scripts\python src/preprocess_ai.py
+.venv\Scripts\python src/train_ai.py
+
 # 9. Demo Gradio (mở http://127.0.0.1:7860)
 .venv\Scripts\python src/demo.py
 ```
