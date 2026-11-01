@@ -4,8 +4,7 @@ Kết luận thật/giả cả video (--split video): video giả nếu tỉ l�
 (> 1% diện tích mặt) >= ngưỡng; ngưỡng chọn trên FF++ val, đo trên test và DFD.
 Lưu <thư mục run>/video_rule.json cho demo.py và bảng runs/analysis_video.md.
 
-Chạy: python src/analyze.py runs/unet_effb0/best.pt runs/deeplabv3plus_effb0/best.pt \
-          runs/segformer_b0/best.pt --split dfd
+Chạy: python src/analyze.py runs/<tên 1>/best.pt runs/<tên 2>/best.pt --split dfd
 Điểm từng frame (IoU ảnh giả, diện tích báo nhầm ảnh thật) lưu ở
 <thư mục run>/analysis/scores_<split>.csv, chạy lại sẽ dùng file này thay vì chạy mô hình.
 Bảng tổng hợp: runs/analysis_<split>.md
@@ -22,9 +21,10 @@ from sklearn.metrics import roc_auc_score
 FA_AREA = 0.01  # giống metrics.py: ảnh thật bị báo nhầm khi vùng dự đoán > 1%
 
 
-def frame_scores(checkpoint, split):
-    path = os.path.join(os.path.dirname(checkpoint), 'analysis',
-                        'scores_{}.csv'.format(split))
+def frame_scores(checkpoint, split, threshold=None):
+    """threshold: ngưỡng pixel; None = ngưỡng lúc train (cfg['threshold'])."""
+    path = os.path.join(os.path.dirname(checkpoint), 'analysis', 'scores_{}{}.csv'.format(
+        split, '' if threshold is None else '_t{:g}'.format(threshold)))
     if not os.path.exists(path) or 'area' not in open(path).readline():
         from dataset import FaceSegDataset, eval_transform
         from evaluate import load_checkpoint
@@ -32,7 +32,8 @@ def frame_scores(checkpoint, split):
         model, cfg, _, device = load_checkpoint(checkpoint)
         ds = FaceSegDataset(os.path.join(cfg['index_dir'], split + '.csv'),
                             cfg['data_root'], eval_transform(cfg['image_size']))
-        scores = rank_all(model, ds, cfg, device, cfg['threshold'])
+        scores = rank_all(model, ds, cfg, device,
+                          cfg['threshold'] if threshold is None else threshold)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w', newline='', encoding='utf-8') as f:
             w = csv.writer(f)
@@ -134,18 +135,23 @@ def rule_stats(score, label, t):
             'auc': float(roc_auc_score(label, score))}
 
 
-def video_rule(checkpoint):
+def video_rule(checkpoint, pixel_threshold=None):
     """Chọn ngưỡng trên val theo độ chính xác cân bằng (val có 4 video giả mỗi
-    video thật), rồi đo trên test và DFD."""
-    val_s, val_y = video_scores(frame_scores(checkpoint, 'val'))
+    video thật), rồi đo trên test và DFD.
+    pixel_threshold (chọn trên val, KE_HOACH.md mục 9.18) được lưu vào rule để demo.py
+    dùng thay ngưỡng lúc train."""
+    val_s, val_y = video_scores(frame_scores(checkpoint, 'val', pixel_threshold))
     grid = np.arange(1, 33) / 32   # 32 frame mỗi video
     t = max(grid, key=lambda g: rule_stats(val_s, val_y, g)['balanced_acc'])
     # mức "nghi ngờ": cao hơn 95% video thật của val (dưới ngưỡng thì chưa chứng minh
     # được là thật, chỉ là không đủ dấu hiệu giả)
     rule = {'threshold': float(t), 'fa_area': FA_AREA,
             'real_p95': float(np.percentile(val_s[val_y == 0], 95))}
+    if pixel_threshold is not None:
+        rule['pixel_threshold'] = pixel_threshold
     for split in ('val', 'test', 'dfd'):
-        rule[split] = rule_stats(*video_scores(frame_scores(checkpoint, split)), t)
+        rule[split] = rule_stats(
+            *video_scores(frame_scores(checkpoint, split, pixel_threshold)), t)
     with open(os.path.join(os.path.dirname(checkpoint), 'video_rule.json'), 'w',
               encoding='utf-8') as f:
         json.dump(rule, f, indent=2)
@@ -157,6 +163,8 @@ def main():
     parser.add_argument('checkpoints', nargs='+')
     parser.add_argument('--split', default='dfd',
                         choices=['val', 'test', 'dfd', 'video'])
+    parser.add_argument('--pixel-threshold', type=float,
+                        help='--split video: ngưỡng pixel chọn trên val, thay ngưỡng lúc train.')
     args = parser.parse_args()
 
     names = [os.path.basename(os.path.dirname(c)) for c in args.checkpoints]
@@ -166,14 +174,15 @@ def main():
                  'ngưỡng chọn trên FF++ val.', '']
         rows = []
         for n, c in zip(names, args.checkpoints):
-            rule = video_rule(c)
+            rule = video_rule(c, args.pixel_threshold)
             for split in ('val', 'test', 'dfd'):
                 s = rule[split]
                 rows.append([n, '{:.0%}'.format(rule['threshold']), split,
                              '{} / {}'.format(s['real_videos'], s['fake_videos']),
                              '{:.1%}'.format(s['real_correct']),
                              '{:.1%}'.format(s['fake_correct']),
-                             '{:.1%}'.format(s['balanced_acc']), '{:.3f}'.format(s['auc'])])
+                             '{:.1%}'.format(s['balanced_acc']),
+                             '{:.3f}'.format(s['auc'])])
         lines += table(['Mô hình', 'Ngưỡng', 'Tập', 'Video thật / giả', 'Đúng video thật',
                         'Đúng video giả', 'Chính xác cân bằng', 'AUC'], rows)
     else:

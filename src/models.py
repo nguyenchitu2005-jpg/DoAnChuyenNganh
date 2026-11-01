@@ -1,31 +1,28 @@
-"""3 kiến trúc segmentation được so sánh; cả ba trả về logits (N,1,H,W)."""
-import segmentation_models_pytorch as smp
+"""Kiến trúc segmentation; trả về logits (N,1,H,W). Baseline Swin-T + UPerNet: KE_HOACH.md mục 5."""
 import torch.nn as nn
-import torch.nn.functional as F
 
 
-class SegFormer(nn.Module):
-    """SegFormer của Hugging Face; logits ra ở 1/4 kích thước, phóng lại bằng ảnh vào."""
+class SwinUperNet(nn.Module):
+    """UPerNet + Swin-T của Hugging Face, khởi tạo từ checkpoint ADE20K (cả encoder và
+    decoder); đầu phân lớp 150 lớp thay bằng 1 kênh. Logits đã phóng về kích thước ảnh vào."""
 
-    def __init__(self, name='nvidia/mit-b0'):
+    def __init__(self, name='openmmlab/upernet-swin-tiny', pretrained=True):
         super().__init__()
-        from transformers import SegformerForSemanticSegmentation
-        self.net = SegformerForSemanticSegmentation.from_pretrained(
-            name, num_labels=1, id2label={0: 'fake'}, label2id={'fake': 0},
-            ignore_mismatched_sizes=True)
+        from transformers import UperNetConfig, UperNetForSemanticSegmentation
+        # bỏ đầu phụ (auxiliary head) của ADE20K: kế hoạch chỉ dùng L_seg trên đầu chính
+        kw = dict(num_labels=1, id2label={0: 'fake'}, label2id={'fake': 0},
+                  use_auxiliary_head=False)
+        if pretrained:
+            self.net = UperNetForSemanticSegmentation.from_pretrained(
+                name, ignore_mismatched_sizes=True, **kw)
+        else:   # nạp trọng số từ checkpoint của mình ngay sau đó
+            self.net = UperNetForSemanticSegmentation(UperNetConfig.from_pretrained(name, **kw))
 
     def forward(self, x):
-        logits = self.net(pixel_values=x).logits
-        return F.interpolate(logits, size=x.shape[-2:], mode='bilinear',
-                             align_corners=False)
+        return self.net(pixel_values=x).logits
 
 
-def build_model(arch, encoder='efficientnet-b0', pretrained=True):
-    weights = 'imagenet' if pretrained else None
-    if arch == 'unet':
-        return smp.Unet(encoder, encoder_weights=weights, classes=1)
-    if arch == 'deeplabv3plus':
-        return smp.DeepLabV3Plus(encoder, encoder_weights=weights, classes=1)
-    if arch == 'segformer':
-        return SegFormer(encoder)
+def build_model(arch, encoder=None, pretrained=True):
+    if arch == 'swin_upernet':
+        return SwinUperNet(encoder, pretrained)
     raise ValueError('unknown arch: ' + arch)

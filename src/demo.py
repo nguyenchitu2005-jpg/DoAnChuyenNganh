@@ -1,5 +1,4 @@
-"""Demo Gradio: tải video lên; Mô hình 1 tô vùng mặt bị chỉnh sửa trên từng frame,
-Mô hình 2 (train_ai.py, nếu đã train) cho biết video có do AI tạo không, kèm Grad-CAM.
+"""Demo Gradio: tải video lên; mô hình tô vùng mặt bị chỉnh sửa trên từng frame.
 
 Chạy: python src/demo.py   rồi mở http://127.0.0.1:7860
 Mỗi frame được cắt mặt giống hệt lúc train (RetinaFace, nới khung 1,3 lần, 256×256,
@@ -16,47 +15,34 @@ import cv2
 import gradio as gr
 import numpy as np
 import pandas as pd
-from matplotlib import colormaps
 import torch
 from scipy.ndimage import uniform_filter1d
 
 import preprocess
 from dataset import eval_transform
-import train_ai
 from evaluate import load_checkpoint
 from visualize import PROB_CMAP
 
 MAX_FRAMES = 300       # video dài hơn thì lấy cách đều 300 frame
-SCALE, SIZE = 1.3, 256  # giống lúc tiền xử lý dữ liệu train
+SCALE, SIZE = 1.3, 224  # giống lúc tiền xử lý dữ liệu train
 SMOOTH = 5            # số frame lấy trung bình xác suất
 FA_AREA = 0.01        # giống metrics.py: frame bị tô > 1% diện tích mặt là có vùng giả
 COLOR = (36, 36, 220)  # BGR, đỏ: phủ bán trong suốt (alpha 0,5) lên vùng dự đoán
-AI_RUN = train_ai.RUN_DIR
-# mô hình segmentation (Mô hình 1); Mô hình 2 ở AI_RUN là bộ phân loại, không chọn ở đây
 CHECKPOINTS = {os.path.basename(os.path.dirname(p)): p
-               for p in sorted(glob.glob('runs/*/best.pt'))
-               if 'smoke' not in p
-               and not os.path.basename(os.path.dirname(p)).startswith('ai_')}
+               for p in sorted(glob.glob('runs/*/best.pt')) if 'smoke' not in p}
 _models = {}
-
-
-def get_ai_model(device):
-    """Mô hình 2 và quy tắc kết luận, hoặc (None, None) nếu chưa train."""
-    rule_path = os.path.join(AI_RUN, 'video_rule.json')
-    if not os.path.exists(rule_path):
-        return None, None
-    if 'ai' not in _models:
-        model = train_ai.build_model(pretrained=False)
-        model.load_state_dict(torch.load(os.path.join(AI_RUN, 'best.pt'),
-                                         map_location='cpu')['model'])
-        with open(rule_path, encoding='utf-8') as f:
-            _models['ai'] = (model.to(device).eval(), json.load(f))
-    return _models['ai']
 
 
 def get_model(name):
     if name not in _models:
-        _models[name] = load_checkpoint(CHECKPOINTS[name])
+        model, cfg, ckpt, device = load_checkpoint(CHECKPOINTS[name])
+        # ngưỡng pixel chọn trên val (analyze.py --pixel-threshold) thay ngưỡng lúc train
+        rule_path = os.path.join(os.path.dirname(CHECKPOINTS[name]), 'video_rule.json')
+        if os.path.isfile(rule_path):
+            with open(rule_path, encoding='utf-8') as f:
+                cfg = dict(cfg, threshold=json.load(f).get('pixel_threshold',
+                                                           cfg['threshold']))
+        _models[name] = model, cfg, ckpt, device
     if preprocess._detector is None:
         preprocess.init_worker(0)
     return _models[name]
@@ -89,8 +75,8 @@ def paste_back(prob, box, shape):
 
 
 @torch.no_grad()
-def predict(crops, model, device, tf=None):
-    tf = tf or eval_transform(SIZE)
+def predict(crops, model, device):
+    tf = eval_transform(SIZE)
     probs = []
     for k in range(0, len(crops), 32):
         x = torch.stack([tf(image=cv2.cvtColor(c, cv2.COLOR_BGR2RGB))['image']
@@ -120,10 +106,6 @@ def run(video, model_name, progress=gr.Progress()):
     crops = [preprocess.square_crop(frames[i], boxes[i], SCALE, SIZE, None)
              for i in found]
     probs = predict(crops, model, device)
-    ai_model, ai_rule = get_ai_model(device)
-    # bộ phân loại ra (B, 1) nên predict trả về một xác suất mỗi frame
-    ai_probs = (predict(crops, ai_model, device, train_ai.ai_transform(False))
-                if ai_model and crops else None)
     # trung bình xác suất 5 frame liền kề (ảnh mặt đã căn theo khung mặt nên gần khớp
     # nhau), giảm nhấp nháy và ảnh hưởng của frame khó như frame đầu/cuối video
     if len(probs):
@@ -165,59 +147,14 @@ def run(video, model_name, progress=gr.Progress()):
                       'Chỉ số': 'Diện tích vùng giả (% mặt)'}),
         pd.DataFrame({'Thời gian (giây)': t, 'Giá trị (%)': 100 * peak,
                       'Chỉ số': 'Xác suất giả lớn nhất trên mặt'}),
-    ])
-    if ai_probs is not None:
-        ai = np.full(len(frames), np.nan)
-        ai[found] = ai_probs
-        df = pd.concat([df, pd.DataFrame({'Thời gian (giây)': t, 'Giá trị (%)': 100 * ai,
-                                          'Chỉ số': 'Điểm do AI tạo (Mô hình 2)'})])
-    df = df.dropna()
+    ]).dropna()
     gallery = []
     for k in pick_frames(probs):
         caption = 'giây {:.1f}: xác suất giả lớn nhất {:.2f}, vùng giả {:.0%}'.format(
             t[found[k]], peak[found[k]], area[found[k]])
-        cam = None
-        if ai_probs is not None:
-            x = train_ai.ai_transform(False)(
-                image=cv2.cvtColor(crops[k], cv2.COLOR_BGR2RGB))
-            cam, _ = train_ai.gradcam(ai_model, x['image'][None].to(device))
-            caption += ', điểm AI {:.2f}'.format(ai_probs[k])
-        gallery.append((panel(crops[k], probs[k], thr, cam), caption))
+        gallery.append((panel(crops[k], probs[k], thr), caption))
     summary = verdict(model_name, len(frames), area[found], peak[found], t[found])
-    if ai_probs is not None:
-        summary += '\n\n---\n\n' + ai_verdict(ai_probs, ai_rule)
     return out_path, df, gallery, summary
-
-
-def ai_verdict(ai_probs, rule):
-    """Mô hình 2: video có do AI tạo không, theo điểm trung bình các frame."""
-    score = float(np.mean(ai_probs))
-    label = ('🟣 CÓ DẤU HIỆU DO AI TẠO' if score >= rule['threshold']
-             else '⚪ KHÔNG ĐỦ DẤU HIỆU DO AI TẠO')
-    test, extra = rule['test'], rule['extra']
-    seen = ', '.join('{} {:.0%}'.format(k, v) for k, v in test['correct_by_source'].items()
-                     if k != 'real_ff++')
-    unseen = ', '.join('{} {:.0%}'.format(k, v)
-                       for k, v in extra['correct_by_source'].items()
-                       if not k.startswith('real'))
-    return '\n'.join([
-        '## Mô hình 2: ' + label,
-        '**Bằng chứng**',
-        '- Điểm do AI tạo trung bình **{:.2f}** (ngưỡng {:.2f}, chọn trên tập val '
-        'TalkingHeadBench); **{:.0%}** số frame vượt ngưỡng.'.format(
-            score, rule['threshold'], np.mean(ai_probs >= rule['threshold'])),
-        '- Ô cuối mỗi ảnh bên dưới là Grad-CAM: **vùng mô hình dựa vào để quyết định** '
-        '(vàng = nhiều), không phải vùng bị làm giả.',
-        '', '**Độ tin cậy (EfficientNet-B0, ảnh mặt)**', '',
-        '| Tập kiểm tra | Nhận đúng |', '| --- | --- |',
-        '| Video thật FF++ test | {:.1%} |'.format(test['real_correct']),
-        '| Video AI, bộ sinh đã gặp, người mới | {:.1%} ({}) |'.format(
-            test['ai_correct'], seen),
-        '| Video AI, bộ sinh chưa gặp | {:.1%} ({}) |'.format(extra['ai_correct'], unseen),
-        '| Video thật khác nguồn (diễn viên DFD) | {:.1%} |'.format(extra['real_correct']),
-        '', 'Mô hình 2 học từ video talking-head (ảnh chân dung được AI làm cử động). Video '
-            'AI loại khác (Sora, filter AI...) có thể bị bỏ sót.',
-    ])
 
 
 def verdict(model_name, n_frames, area, peak, t):
@@ -266,7 +203,7 @@ def verdict(model_name, n_frames, area, peak, t):
             rule['test']['real_correct'], rule['test']['fake_correct']),
         '| DFD (deepfake của Google, nguồn khác) | {:.1%} | {:.1%} |'.format(
             rule['dfd']['real_correct'], rule['dfd']['fake_correct']),
-        '', 'Mô hình chỉ học từ FF++ (video tin tức, 4 phương pháp ghép/sửa mặt). Video '
+        '', 'Mô hình học từ FF++ (video tin tức/phỏng vấn, các kiểu ghép/sửa mặt). Video '
             'do AI tạo trọn vẹn, filter làm đẹp, video quay bằng điện thoại/webcam hoặc '
             'deepfake tạo bằng công cụ khác có thể bị bỏ sót hoặc kết luận sai.',
     ]
@@ -282,9 +219,8 @@ def pick_frames(probs, n=6):
     return sorted(set(ks))
 
 
-def panel(crop, prob, thr, cam=None):
-    """Ảnh mặt | bản đồ xác suất từng pixel (thang cố định 0-1) | vùng vượt ngưỡng
-    | Grad-CAM của Mô hình 2 phủ lên ảnh (nếu có)."""
+def panel(crop, prob, thr):
+    """Ảnh mặt | bản đồ xác suất từng pixel (thang cố định 0-1) | vùng vượt ngưỡng."""
     rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
     heat = (PROB_CMAP(prob)[..., :3] * 255).astype(np.uint8)
     # viền xám để ô toàn 0 (mặt thật) không trông như ảnh trống
@@ -293,36 +229,28 @@ def panel(crop, prob, thr, cam=None):
     m = prob > thr
     over[m] = (0.5 * over[m] + 0.5 * np.array(COLOR[::-1])).astype(np.uint8)
     gap = np.full((SIZE, 6, 3), 255, np.uint8)
-    tiles = [rgb, gap, heat, gap, over]
-    if cam is not None:
-        # thang màu khác hẳn Mô hình 1 để không đọc nhầm thành "vùng giả"
-        color = (colormaps['plasma'](cam)[..., :3] * 255).astype(np.uint8)
-        # Mô hình 2 chỉ nhìn khung mặt (cắt giữa), nên phủ lên đúng phần đó
-        c = (SIZE - train_ai.FACE) // 2
-        face = cv2.resize(rgb[c:SIZE - c, c:SIZE - c], (SIZE, SIZE))
-        tiles += [gap, (0.5 * face + 0.5 * color).astype(np.uint8)]
-    return np.hstack(tiles)
+    return np.hstack([rgb, gap, heat, gap, over])
 
 
 with gr.Blocks(title='Phát hiện vùng mặt bị chỉnh sửa') as app:
-    gr.Markdown('# Phát hiện vùng mặt bị chỉnh sửa và video do AI tạo\n'
-                'Tải video lên. Mô hình 1: vùng phủ đỏ là vùng bị ghép/sửa. '
-                'Mô hình 2: video có do AI tạo không, kèm Grad-CAM.')
+    gr.Markdown('# Phát hiện vùng mặt bị chỉnh sửa\n'
+                'Tải video lên. Vùng phủ đỏ là vùng bị ghép/sửa.')
     with gr.Row():
         with gr.Column():
-            video_in = gr.Video(label='Video đầu vào')
+            # ô tải file, không phải trình phát: Chrome không phát được MPEG-4 Part 2,
+            # HEVC (iPhone), H.264 4:4:4 (FF++); OpenCV vẫn đọc được
+            video_in = gr.File(label='Video đầu vào (mp4, mov, avi, ...)',
+                               file_types=['video'], type='filepath')
             model_in = gr.Dropdown(list(CHECKPOINTS), label='Mô hình',
-                                   value='unet_effb0' if 'unet_effb0' in CHECKPOINTS
-                                   else next(iter(CHECKPOINTS), None),
-                                   info='Mô hình 1 (segmentation)')
+                                   value=next(iter(CHECKPOINTS), None),
+                                   info='Segmentation')
             button = gr.Button('Phân tích', variant='primary')
         with gr.Column():
             video_out = gr.Video(label='Kết quả')
             summary_out = gr.Markdown()
     gallery_out = gr.Gallery(
-        label='Ảnh mặt | Mô hình 1: xác suất giả từng pixel (trắng = 0, xanh đậm = 1) | '
-              'vùng vượt ngưỡng 0,5 (đỏ) | Mô hình 2: Grad-CAM (vàng = mô hình dựa vào '
-              'nhiều)', columns=2, height='auto',
+        label='Ảnh mặt | xác suất giả từng pixel (trắng = 0, xanh đậm = 1) | '
+              'vùng vượt ngưỡng (đỏ)', columns=2, height='auto',
         object_fit='contain')   # mặc định 'cover' cắt ảnh 3 ô, chỉ còn ô giữa
     plot_out = gr.LinePlot(x='Thời gian (giây)', y='Giá trị (%)', color='Chỉ số',
                            label='Vùng giả và xác suất giả theo thời gian',
@@ -331,4 +259,4 @@ with gr.Blocks(title='Phát hiện vùng mặt bị chỉnh sửa') as app:
                  [video_out, plot_out, gallery_out, summary_out])
 
 if __name__ == '__main__':
-    app.launch()
+    app.launch(inbrowser=True)   # tự mở trình duyệt mặc định của Windows (Chrome)

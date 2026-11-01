@@ -1,7 +1,7 @@
 """Đo độ bền: đánh giá một checkpoint trên ảnh test bị nén JPEG, blur, noise ở nhiều mức.
 
-Chạy: python src/robustness.py runs/unet_effb0/best.pt
-Thử nhanh: python src/robustness.py runs/unet_effb0/best.pt --fraction 0.05
+Chạy: python src/robustness.py runs/<tên>/best.pt
+Thử nhanh: python src/robustness.py runs/<tên>/best.pt --fraction 0.05
 Kết quả trong <thư mục run>/robustness/: robustness.csv, robustness.md (bảng),
 robustness.png (IoU ảnh giả và tỉ lệ báo nhầm theo từng mức làm hỏng).
 """

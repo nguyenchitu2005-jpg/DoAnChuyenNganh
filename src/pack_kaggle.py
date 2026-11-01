@@ -1,7 +1,7 @@
 """Đóng gói ảnh mặt đã cắt + file index thành một file zip để tải lên Kaggle Dataset.
 
 Chạy: python src/pack_kaggle.py
-Mặc định lấy train, val, test (FF++ c23, khoảng 12 GB); DFD và c40 đánh giá ở máy nhà.
+Mặc định lấy train, val, test (FF++ c23, ảnh 224: khoảng 10 GB); DFD và c40 đánh giá ở máy nhà.
 Kết quả: data/kaggle/ffpp_faces_c23.zip (bên trong: faces/..., index/<split>.csv)
 và data/kaggle/dataset-metadata.json để tải lên bằng `kaggle datasets create`.
 PNG đã nén sẵn nên zip chỉ lưu (không nén lại), đóng gói nhanh hơn.

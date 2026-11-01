@@ -10,6 +10,8 @@ Mask nhị phân bằng ngưỡng > MASK_THRESHOLD (mask Face2Face/FaceSwap/Neur
 là ảnh xám có bóng đổ, ngưỡng 127 làm mất 10 đến 20% vùng giả), lưu 0/255.
 
 Kết quả: data/faces/<nhóm>/{frames,masks}/<video>/<chỉ số frame>.png
+Khung cắt trên frame gốc: data/faces/<nhóm>/frames/<video>/boxes.json,
+    {"<chỉ số frame>.png": [x, y, cạnh]} (khung vuông của crop_box, để ghép mask về frame)
 Nhật ký từng video: data/faces/log.jsonl
 Bản c40 (test độ bền, dùng chung mask): python src/preprocess.py --compression c40 --out data/faces_c40
 """
@@ -128,6 +130,8 @@ def square_crop(img, box, scale, size, interp):
 def process_video(task):
     group, video_path, mask_path, out_root, n_frames, scale, size = task
     video = os.path.splitext(os.path.basename(video_path))[0]
+    if '%' in video:   # chuỗi ảnh (thư mục/%08d.png): tên video là tên thư mục
+        video = os.path.basename(os.path.dirname(video_path))
     frames, masks, idx, total = read_frames(video_path, mask_path, n_frames)
     all_boxes = detect_faces(frames) if frames else []
     frame_dir = os.path.join(out_root, group, 'frames', video)
@@ -136,6 +140,7 @@ def process_video(task):
     if mask_path:
         os.makedirs(mask_dir, exist_ok=True)
     saved = empty_mask = 0
+    crops = {}
     for f, m, i, boxes in zip(frames, masks, idx, all_boxes):
         binary = (m.max(axis=2) > MASK_THRESHOLD).astype(np.uint8) \
             if mask_path else None
@@ -143,6 +148,7 @@ def process_video(task):
         if box is None:
             continue
         name = '{:04d}.png'.format(i)
+        crops[name] = crop_box(box, scale)
         cv2.imwrite(os.path.join(frame_dir, name),
                     square_crop(f, box, scale, size, None),
                     [cv2.IMWRITE_PNG_COMPRESSION, 3])
@@ -151,6 +157,8 @@ def process_video(task):
             empty_mask += not crop.any()
             cv2.imwrite(os.path.join(mask_dir, name), crop)
         saved += 1
+    with open(os.path.join(frame_dir, 'boxes.json'), 'w', encoding='utf-8') as fp:
+        json.dump(crops, fp)
     return {'group': group, 'video': video, 'total_frames': total,
             'read': len(frames), 'saved': saved,
             'no_face': len(frames) - saved, 'empty_mask': empty_mask}
@@ -163,7 +171,7 @@ def main():
     parser.add_argument('--compression', default='c23', choices=['c23', 'c40'])
     parser.add_argument('--frames', type=int, default=32)
     parser.add_argument('--scale', type=float, default=1.3)
-    parser.add_argument('--size', type=int, default=256)
+    parser.add_argument('--size', type=int, default=224)   # Swin-T: 224 = 7 × 32
     parser.add_argument('--workers', type=int, default=3,
                         help='Số tiến trình, mỗi tiến trình một RetinaFace trên GPU.')
     parser.add_argument('--limit', type=int, default=None,

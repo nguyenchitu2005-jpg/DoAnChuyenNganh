@@ -1,9 +1,12 @@
 """Lập danh sách cặp frame/mask từ ảnh mặt đã cắt (src/preprocess.py), chia theo split chính thức của FF++.
 
 Chạy: python src/build_index.py
+Bản c40: python src/build_index.py --root data/faces_c40 --out data/index_c40 --compression c40
 Kết quả: data/index/{train,val,test,dfd}.csv, mỗi dòng là một frame:
-    frame, mask (rỗng với frame thật), method, video, label (0 thật, 1 giả)
-Đường dẫn trong CSV là đường dẫn tương đối so với thư mục dữ liệu.
+    frame, mask (rỗng với frame thật), method, video, label (0 thật, 1 giả),
+    compression, bbox ("x,y,cạnh": khung cắt vuông trên frame gốc, từ boxes.json)
+Đường dẫn trong CSV là đường dẫn tương đối so với thư mục dữ liệu. Nhãn đa lớp là
+chỉ số của method trong dataset.METHODS (0 original, 1 Deepfakes, ..., 4 NeuralTextures).
 Frame giả có mask trống bị bỏ: mask chính thức của vài video FF++ nằm lệch khỏi
 khuôn mặt (ví dụ Face2Face 115_939, mask nằm trên phông nền), giữ lại sẽ dạy mô hình
 rằng mặt giả không có vùng giả.
@@ -16,16 +19,18 @@ import os
 import cv2
 
 FF_FAKE = ['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures']
-FIELDS = ['frame', 'mask', 'method', 'video', 'label']
+FIELDS = ['frame', 'mask', 'method', 'video', 'label', 'compression', 'bbox']
 
 
-def video_rows(root, seq, method, video, label):
+def video_rows(root, seq, method, video, label, compression):
     """Mọi frame của một video; frame giả kèm mask cùng tên, bỏ frame giả không có mask
     hoặc mask trống. Trả về (các dòng, số frame bị bỏ)."""
     base = seq
     frame_dir = os.path.join(root, base, 'frames', video)
     if not os.path.isdir(frame_dir):
         return [], 0
+    with open(os.path.join(frame_dir, 'boxes.json'), encoding='utf-8') as f:
+        boxes = json.load(f)
     rows, missing = [], 0
     for name in sorted(f for f in os.listdir(frame_dir) if f.endswith('.png')):
         mask = ''
@@ -37,11 +42,12 @@ def video_rows(root, seq, method, video, label):
                 continue
         rows.append({'frame': '{}/frames/{}/{}'.format(base, video, name),
                      'mask': mask, 'method': method, 'video': video,
-                     'label': label})
+                     'label': label, 'compression': compression,
+                     'bbox': ','.join(map(str, boxes[name]))})
     return rows, missing
 
 
-def ff_split_rows(root, pairs):
+def ff_split_rows(root, pairs, compression):
     rows, missing, absent = [], 0, []
     for a, b in pairs:
         videos = [('original_sequences/youtube', 'original', v, 0)
@@ -49,7 +55,7 @@ def ff_split_rows(root, pairs):
         videos += [('manipulated_sequences/' + m, m, v, 1)
                    for m in FF_FAKE for v in (a + '_' + b, b + '_' + a)]
         for seq, method, video, label in videos:
-            r, miss = video_rows(root, seq, method, video, label)
+            r, miss = video_rows(root, seq, method, video, label, compression)
             if not r:
                 absent.append(method + '/' + video)
             rows += r
@@ -57,14 +63,14 @@ def ff_split_rows(root, pairs):
     return rows, missing, absent
 
 
-def dfd_rows(root):
+def dfd_rows(root, compression):
     rows, missing, absent = [], 0, []
     for seq, method, label in [
             ('manipulated_sequences/DeepFakeDetection', 'DFD', 1),
             ('original_sequences/actors', 'actors', 0)]:
         frame_root = os.path.join(root, seq, 'frames')
         for video in sorted(os.listdir(frame_root)):
-            r, miss = video_rows(root, seq, method, video, label)
+            r, miss = video_rows(root, seq, method, video, label, compression)
             if not r:
                 absent.append(method + '/' + video)
             rows += r
@@ -100,17 +106,19 @@ def main():
     parser.add_argument('--root', default='data/faces')
     parser.add_argument('--splits', default='data/splits')
     parser.add_argument('--out', default='data/index')
+    parser.add_argument('--compression', default='c23', choices=['c23', 'c40'],
+                        help='Mức nén của ảnh trong --root, ghi vào cột compression.')
     args = parser.parse_args()
     os.makedirs(args.out, exist_ok=True)
 
     for split in ('train', 'val', 'test'):
         with open(os.path.join(args.splits, split + '.json')) as f:
             pairs = json.load(f)
-        rows, missing, absent = ff_split_rows(args.root, pairs)
+        rows, missing, absent = ff_split_rows(args.root, pairs, args.compression)
         write_csv(os.path.join(args.out, split + '.csv'), rows)
         summarize(split, rows, missing, absent)
 
-    rows, missing, absent = dfd_rows(args.root)
+    rows, missing, absent = dfd_rows(args.root, args.compression)
     write_csv(os.path.join(args.out, 'dfd.csv'), rows)
     summarize('dfd', rows, missing, absent)
 

@@ -1,403 +1,309 @@
-# Kế hoạch đồ án: Định vị vùng giả mạo deepfake trên khuôn mặt bằng pixel segmentation
+# Kế hoạch: Định vị vùng giả mạo khuôn mặt (Deepfake Segmentation) trên FaceForensics++
 
-Cập nhật: 11/10/2026 · Thời gian thực hiện: 12/10/2026 – 24/01/2027 (15 tuần)
+**Mô hình gốc (baseline):** Swin Transformer bản Tiny (Swin-T) làm encoder + UPerNet làm decoder
+**Hướng phát triển:** bổ sung dần từng nhánh cải tiến, đo đóng góp của từng nhánh bằng thí nghiệm loại bỏ (ablation study)
 
-Đề tài giải bài toán **pixel segmentation**: với mỗi ảnh mặt cắt từ frame video, mô hình dự đoán cho **từng pixel** xác suất pixel đó thuộc vùng bị chỉnh sửa. Đề tài so sánh 3 kiến trúc là U-Net, DeepLabV3+ và SegFormer-B0. Dữ liệu train và test là FaceForensics++ (FF++) c23 có mask, còn DeepFakeDetection (DFD) dùng để kiểm tra chéo. Theo yêu cầu của giảng viên, đề tài **không làm phân loại thật/giả** cho cả video.
+---
 
-## 1. Bài toán ở mức pixel
+## 0. Mục tiêu
 
-| | Mô tả |
-| --- | --- |
-| Đầu vào | Ảnh mặt RGB 256×256, cắt từ một frame video |
-| Đầu ra | Bản đồ xác suất 256×256. Lấy ngưỡng 0,5 được mask nhị phân, trong đó 1 là pixel bị chỉnh sửa |
-| Nhãn | Mask chính thức của FF++/DFD, cắt cùng khung với ảnh. Mặt thật dùng mask đen toàn bộ |
-| Loss | Dice + BCE. Dice bù cho việc pixel giả ít hơn pixel thật, BCE giữ cho mặt thật được dự đoán đúng là đen |
+| Cấp độ | Nhiệm vụ | Đầu ra |
+|---|---|---|
+| Chính | **Segment** vùng bị làm giả | Mask nhị phân theo từng pixel (1 = giả, 0 = thật) |
+| Phụ | **Phân loại nhị phân** | Ảnh/video thật hay giả |
+| Phụ | **Phân lớp đa lớp** | Phương pháp làm giả: Real, Deepfakes, Face2Face, FaceSwap, NeuralTextures |
 
-Hình dạng mask khác nhau theo phương pháp giả, nên khi phân tích kết quả cần nêu rõ:
+**Đóng góp dự kiến của đề tài:**
+1. Xây dựng baseline Swin-T + UPerNet cho định vị vùng giả trên FF++.
+2. Phân tích hạn chế của baseline với bài toán deepfake.
+3. Đề xuất mô hình cải tiến (nhánh CNN, nhánh biên, nhánh tần số, học đa nhiệm) và chứng minh bằng ablation.
 
-| Phương pháp | Loại giả | Hình dạng mask |
-| --- | --- | --- |
-| Deepfakes | Thay mặt (autoencoder) | Hình chữ nhật quanh mặt |
-| FaceSwap | Thay mặt (đồ hoạ) | Theo viền mặt, chừa lỗ ở miệng |
-| Face2Face | Tái hiện biểu cảm | Ảnh render 3D xám có bóng đổ, phủ gần cả mặt |
-| NeuralTextures | Tái hiện biểu cảm (neural rendering) | Ảnh render xám, phủ gần cả mặt |
-| DFD | Thay mặt (Google) | Gần chữ nhật quanh mặt |
+---
 
-Trên khung hình gốc, vùng giả chỉ chiếm khoảng 1–9% diện tích (đo trên 8 video mỗi loại). Sau khi cắt mặt, tỉ lệ vùng giả trung bình là **24%** ở Deepfakes và khoảng **32%** ở Face2Face, FaceSwap, NeuralTextures (đo trên 400 frame train mỗi loại). Như vậy, ngay cả trên ảnh giả, phần lớn pixel vẫn là pixel thật.
+## 1. Tổng quan lộ trình
 
-## 2. Dữ liệu
+| Giai đoạn | Nội dung | Kết quả cần có |
+|---|---|---|
+| 1 | Chuẩn bị dữ liệu | FF++ (c23, sau đó c40) kèm mask, chia train/val/test |
+| 2 | Tiền xử lý | Ảnh mặt + mask đã cắt đồng bộ, file metadata |
+| 3 | Baseline Swin-T + UPerNet | Bảng kết quả baseline |
+| 4 | Cải tiến từng bước (B1 → B4) | Bảng ablation |
+| 5 | Thí nghiệm bổ sung | So sánh decoder, mức nén, từng phương pháp |
+| 6 | Suy luận trên video, demo | Video có tô vùng giả |
+| 7 | Viết báo cáo | Báo cáo, slide bảo vệ |
 
-Chỉ dùng dữ liệu tải từ server TUM bằng script chính thức của FF++ (server EU2), mức nén c23.
+---
 
-| Phần | Số video | Dung lượng | Dùng để |
-| --- | --- | --- | --- |
-| original (youtube) | 1000 | ~8,5 GB (cùng 4 phương pháp) | Mặt thật FF++ |
-| Deepfakes, Face2Face, FaceSwap, NeuralTextures | 4 × 1000 | (tính chung ở trên) | Mặt giả FF++ |
-| Mask 4 phương pháp | 4 × 1000 | 44 MB / 14 GB / 15 GB / 12 GB | Nhãn pixel |
-| DFD giả c23 + mask | 3068 + 3068 | 20 GB + 3,9 GB | Kiểm tra chéo |
-| DFD thật (actors) c23 | 363 | 2,8 GB | Đo báo nhầm khi kiểm tra chéo |
-| Bản **c40** (nén mạnh) của original, 4 phương pháp, DFD giả và thật | 5000 + 3068 + 363 | (đang tải) | Test độ bền với video nén mạnh. Dùng chung mask c23 vì cùng frame |
+## 2. Môi trường và công cụ
 
-- **Chia tập:** dùng split chính thức của FF++ (`data/splits/{train,val,test}.json`), gồm 360/70/70 cặp, tức 720/140/140 video gốc. Mỗi cặp `[a, b]` cho ra 2 video gốc và 2 video giả mỗi phương pháp (`a_b`, `b_a`). Như vậy một người chỉ xuất hiện trong một tập, không chia ngẫu nhiên theo frame.
-- Số frame sau tiền xử lý (`data/index/*.csv`):
+- **Ngôn ngữ, framework:** Python 3.10+, PyTorch 2.x
+- **Mô hình:**
+  - `transformers` (Hugging Face): `UperNetForSemanticSegmentation`, checkpoint `openmmlab/upernet-swin-tiny`
+  - hoặc `mmsegmentation` (cấu hình UPerNet + Swin-T có sẵn)
+  - `timm`: EfficientNet-B0 (cho nhánh CNN ở giai đoạn sau)
+  - `segmentation_models_pytorch`: dùng cho thí nghiệm so sánh decoder
+- **Xử lý ảnh, video:** OpenCV, `albumentations`
+- **Phát hiện mặt:** RetinaFace (`insightface` hoặc `retinaface`) hoặc MTCNN (`facenet-pytorch`)
+- **Đánh giá:** `torchmetrics`, `scikit-learn`
+- **Theo dõi thí nghiệm:** TensorBoard hoặc Weights & Biases
+- **Phần cứng gợi ý:** GPU từ 12 GB trở lên cho Swin-T segment ở 224×224; GPU nhỏ hơn thì giảm batch size, dùng mixed precision (AMP) và gradient accumulation
 
-  | Tập | Frame thật | Frame giả | Ghi chú |
-  | --- | --- | --- | --- |
-  | Train | 23.039 | 92.084 | 720 video mỗi nhóm |
-  | Val | 4.480 | 17.851 | Bỏ Face2Face/NeuralTextures `115_939` (mask lệch) |
-  | Test | 4.480 | 17.849 | Bỏ Face2Face/NeuralTextures `227_169` (mask lệch) |
-  | DFD | 11.047 | 97.083 | 3068 video giả, 363 video thật |
-
-- **DFD** không dùng để train, chỉ dùng để đo khả năng tổng quát.
-- **FaceShifter** không có mask nên không dùng.
-- Mỗi video gốc có 4 video giả tương ứng, nên khoảng 80% frame là giả. Vì vậy khi train cần lấy mẫu cân bằng (mục 4).
-
-## 3. Tiền xử lý (`src/preprocess.py`)
-
-| Bước | Cách làm |
-| --- | --- |
-| 1. Lấy frame | 32 frame cách đều mỗi video. Đọc video và video mask **song song từng frame**, nên chỉ số frame luôn khớp |
-| 2. Phát hiện mặt | RetinaFace ResNet-50 (`batch-face`, chạy GPU), ngưỡng tin cậy 0,9. Phát hiện trên ảnh thu nhỏ về cạnh dài 960 rồi đổi khung về ảnh gốc |
-| 3. Chọn mặt | Video thật: mặt lớn nhất. Video giả: mặt **chứa nhiều vùng mask nhất**, vì cảnh DFD có thể có 2 người mà người lớn hơn không bị giả |
-| 4. Cắt | Khung vuông có cạnh bằng 1,3 lần cạnh dài của mặt. Phần ra ngoài ảnh tô đen. Cắt ảnh và mask bằng **cùng một khung** |
-| 5. Nhị phân mask | Ngưỡng **> 10**, lưu dạng 0/255. Mask Face2Face/FaceSwap/NeuralTextures là ảnh xám có bóng đổ: ngưỡng 127 làm mất 10–20% vùng giả |
-| 6. Resize | 256×256. Ảnh dùng INTER_AREA khi thu nhỏ, INTER_LINEAR khi phóng to. Mask dùng INTER_NEAREST để biên không bị nhoè |
-| 7. Lưu | PNG (không thêm nhiễu nén) vào `data/faces/<nhóm>/{frames,masks}/<video>/<chỉ số frame>.png`. Nhật ký mỗi video ghi vào `data/faces/log.jsonl` |
-
-Kết quả trên c23: 8.431 video cho khoảng 268 nghìn cặp ảnh và mask, chạy khoảng 3,5 tiếng (3 tiến trình trên RTX 3050). Số frame không tìm thấy mặt: FF++ dưới 0,02%; DFD giả 0,7%; DFD thật 4,9% (cảnh đi bộ, người ở xa hoặc quay lưng).
-
-Lỗi trong mask chính thức đã phát hiện và xử lý:
-
-| Vấn đề | Video | Xử lý |
-| --- | --- | --- |
-| Mask nằm lệch khỏi mặt (trên phông nền), trọn video | Face2Face và NeuralTextures của `115_939` (val) và `227_169` (test) | `build_index.py` bỏ mọi frame giả có mask trống: train 66, val 65, test 71, DFD 40 frame |
-| Mask trống ở vài frame lẻ | Khoảng 27 video FaceSwap (1–5 frame, riêng `604_703` có 25 frame), 40 video DFD (1 frame, chủ yếu cảnh `kitchen_pan` và đi bộ), Deepfakes `024_073` (1 frame) | Như trên |
-| Mask ngắn hơn video (khớp từ frame đầu) | 118/3068 video DFD | Chỉ lấy 32 frame trong đoạn có mask |
-
-## 4. Pipeline huấn luyện
-
-| Thành phần | File | Nội dung |
-| --- | --- | --- |
-| Danh sách mẫu | `src/build_index.py` | `data/index/{train,val,test,dfd}.csv`. Mỗi dòng là một frame: đường dẫn ảnh, mask, phương pháp, video, nhãn |
-| Dataset | `src/dataset.py` | Trả về ảnh (3,256,256) và mask (1,256,256) 0/1. Frame thật dùng mask đen |
-| Augment | `src/dataset.py` | Lật ngang, xoay ±10°, scale 0,9–1,1, dịch ±5%: áp cho **cả ảnh và mask**. Nén JPEG 40–100, blur, noise, độ sáng: **chỉ áp cho ảnh** |
-| Cân bằng | `balanced_sampler` | Mỗi batch trung bình **50% frame thật, 50% frame giả**. Đã kiểm tra: 49% qua 50 batch |
-| Train | `src/train.py` | AMP float16, AdamW, OneCycleLR, batch 16, 10 epoch. Lưu `last.pt` mỗi epoch, log TensorBoard |
-| Chọn checkpoint | `src/train.py` | `best.pt` theo điểm **(IoU ảnh giả + (1 − tỉ lệ báo nhầm)) / 2** |
-| Đánh giá | `src/evaluate.py` | Chạy trên val, test hoặc dfd. In bảng theo từng phương pháp, lưu `eval_<split>.json` |
-
-Không chọn checkpoint chỉ theo IoU. Lần chạy thử (1 epoch, 5% dữ liệu) cho IoU ảnh giả 0,78 nhưng **82% mặt thật bị báo nhầm**. Mask Face2Face/NeuralTextures phủ gần cả mặt, nên một mô hình chỉ biết "tô khuôn mặt" vẫn đạt IoU cao.
-
-## 5. Mô hình
-
-| Mô hình | Ý tưởng | Encoder (pretrained ImageNet) | Tham số | Learning rate |
-| --- | --- | --- | --- | --- |
-| U-Net | Encoder-decoder, skip connection giữ chi tiết biên | EfficientNet-B0 | 6,3M | 3e-4 |
-| DeepLabV3+ | Tích chập giãn (ASPP) nắm bối cảnh nhiều tỉ lệ | EfficientNet-B0 | 4,9M | 3e-4 |
-| SegFormer-B0 | Transformer nhẹ, quan hệ toàn cục giữa các vùng | MiT-B0 (`nvidia/mit-b0`) | 3,7M | 1e-4 |
-
-Cả ba dùng cùng dữ liệu, ảnh 256×256, loss, số epoch và cách chọn checkpoint, để so sánh công bằng. Cấu hình nằm trong `configs/{unet,deeplabv3plus,segformer}.yaml`. Thời gian thực tế: U-Net mất khoảng 18 phút mỗi epoch, 10 epoch khoảng 3 tiếng trên RTX 3050 4 GB.
-
-## 6. Đánh giá ở mức pixel (`src/metrics.py`)
-
-| Chỉ số | Cách tính | Ý nghĩa |
-| --- | --- | --- |
-| IoU | Trung bình theo ảnh giả: giao / hợp của mask dự đoán và mask thật | Chỉ số chính |
-| Dice | Trung bình theo ảnh giả: 2 × giao / tổng diện tích | Thường dùng trong paper |
-| Pixel Precision, Recall, F1 | Cộng dồn mọi pixel của ảnh giả | Cho biết mô hình tô thừa hay tô thiếu |
-| Pixel-AUC | 256 pixel ngẫu nhiên mỗi ảnh, không phụ thuộc ngưỡng | So sánh 3 mô hình |
-| Tỉ lệ báo nhầm | Phần trăm ảnh mặt thật có vùng dự đoán giả lớn hơn 1% diện tích | IoU không đo được trên mask đen |
-
-Báo cáo các bảng sau:
-1. FF++ test, từng phương pháp.
-2. DFD (kiểm tra chéo).
-3. Độ bền: mô hình train trên c23, test trên **c40** (cắt mặt bằng cùng `preprocess.py`, dùng mask c23), và trên ảnh c23 bị nén JPEG nhiều mức, blur, noise.
-
-## 7. Lệnh chạy
+### Cấu trúc thư mục dự án
 
 ```
-# 1. Tải dữ liệu (tự chờ khi server TUM sập)
-powershell -ExecutionPolicy Bypass -File download_all.ps1
-python watch_progress.py
-
-# 2. Tiền xử lý: cắt mặt và mask
-.venv\Scripts\python src/preprocess.py
-
-# 3. Danh sách mẫu và kiểm tra dữ liệu
-.venv\Scripts\python src/build_index.py
-.venv\Scripts\python src/check_data.py --n 200
-
-# 4. Train (thử nhanh trước bằng --fraction 0.05 --epochs 1)
-.venv\Scripts\python src/train.py --config configs/unet.yaml
-tensorboard --logdir runs
-
-# 5. Đánh giá
-.venv\Scripts\python src/evaluate.py runs/unet_effb0/best.pt --split test
-.venv\Scripts\python src/evaluate.py runs/unet_effb0/best.pt --split dfd
-.venv\Scripts\python src/evaluate.py runs/unet_effb0/best.pt --split test --compression c40
-
-# 6. Độ bền JPEG/blur/noise (bảng + biểu đồ trong runs/<run>/robustness/)
-.venv\Scripts\python src/robustness.py runs/unet_effb0/best.pt
-
-# 7. Hình minh hoạ mask dự đoán và mask thật (runs/<run>/figures/)
-.venv\Scripts\python src/visualize.py runs/unet_effb0/best.pt --split test --mode random
-.venv\Scripts\python src/visualize.py runs/unet_effb0/best.pt --split test --mode worst
-
-# 8. Phân tích lỗi theo vị trí frame và cặp diễn viên DFD (runs/analysis_<split>.md)
-.venv\Scripts\python src/analyze.py runs/unet_effb0/best.pt runs/deeplabv3plus_effb0/best.pt runs/segformer_b0/best.pt --split dfd
-# Ngưỡng kết luận thật/giả theo video cho demo (runs/<run>/video_rule.json)
-.venv\Scripts\python src/analyze.py runs/unet_effb0/best.pt runs/deeplabv3plus_effb0/best.pt runs/segformer_b0/best.pt --split video
-
-# Mô hình 2 (video do AI tạo): tải video giả TalkingHeadBench (khoảng 5,9 GB, không tải audio),
-# cắt mặt, train EfficientNet-B0, chọn ngưỡng trên val (runs/ai_effb0/)
-.venv\Scripts\python -c "from huggingface_hub import snapshot_download; snapshot_download('luchaoqi/TalkingHeadBench', repo_type='dataset', local_dir='data/TalkingHeadBench', allow_patterns=['fake/*', 'real/*', 'README.md'])"
-.venv\Scripts\python src/preprocess_ai.py
-.venv\Scripts\python src/train_ai.py
-
-# 9. Demo Gradio (mở http://127.0.0.1:7860)
-.venv\Scripts\python src/demo.py
+deepfake-seg/
+├── configs/            # file cấu hình cho từng thí nghiệm (baseline, B1, B2...)
+├── data/
+│   ├── raw/            # video FF++ gốc, video giả, video mask
+│   ├── processed/      # ảnh mặt và mask đã cắt
+│   └── splits/         # train.json, val.json, test.json chính thức
+├── src/
+│   ├── preprocess/     # trích khung hình, cắt mặt, cắt mask
+│   ├── datasets/       # Dataset, augmentation
+│   ├── models/         # baseline, các nhánh cải tiến
+│   ├── losses/         # BCE, Dice, loss biên
+│   ├── train.py
+│   ├── evaluate.py
+│   └── infer_video.py
+├── outputs/            # checkpoint, log, hình trực quan hóa
+└── KE_HOACH.md
 ```
-Khi GPU đang bận train, thêm `--cpu` vào lệnh 6 và 7 (chậm hơn nhiều, nên dùng kèm `--fraction`).
 
-**Train trên Kaggle** (khi muốn rảnh máy nhà): đóng gói train/val/test bằng
-`src/pack_kaggle.py --user <tên Kaggle>` (khoảng 12 GB), tải lên một Kaggle Dataset **riêng tư**
-(giấy phép FF++ không cho chia sẻ), rồi chạy `kaggle/train_kaggle.ipynb`. Notebook clone code từ GitHub, train
-vào `/kaggle/working/runs/` và đánh giá trên test. Tải `best.pt` về `runs/<tên run>/` để chạy
-DFD, c40, độ bền và hình minh hoạ ở máy nhà (`evaluate.py` tự đổi về `data/faces`).
+---
 
-## 8. Lịch thực hiện
+## 3. Giai đoạn 1: Chuẩn bị dữ liệu
 
-| Tuần | Thời gian | Công việc | Đầu ra |
-| --- | --- | --- | --- |
-| 1 | 12/10 – 18/10 | Tải dữ liệu TUM; tiền xử lý RetinaFace; kiểm tra frame/mask | `data/faces/` hoàn chỉnh |
-| 2 | 19/10 – 25/10 | Index, Dataset, augment, lấy mẫu cân bằng, metrics, vòng train/eval; chạy thử 5% dữ liệu | Pipeline chạy được |
-| 3 | 26/10 – 01/11 | Train U-Net EfficientNet-B0 | Trọng số U-Net |
-| 4 | 02/11 – 08/11 | Đánh giá U-Net: FF++ test từng phương pháp, DFD, tỉ lệ báo nhầm | Bảng kết quả U-Net |
-| 5 | 09/11 – 15/11 | Train DeepLabV3+ cùng cấu hình | Trọng số DeepLabV3+ |
-| 6 | 16/11 – 22/11 | Đánh giá như tuần 4 | Bảng kết quả DeepLabV3+ |
-| 7 | 23/11 – 29/11 | Test độ bền trên c40 và JPEG/blur/noise cho 2 mô hình; dự phòng trễ | Bảng độ bền |
-| 8 | 30/11 – 06/12 | Giữa kỳ: so sánh U-Net và DeepLabV3+, trình bày tiến độ | Báo cáo giữa kỳ |
-| 9 | 07/12 – 13/12 | Train SegFormer-B0 | Trọng số SegFormer |
-| 10 | 14/12 – 20/12 | Đánh giá SegFormer, kể cả độ bền | Bảng kết quả SegFormer |
-| 11 | 21/12 – 27/12 | So sánh 3 kiến trúc; phương pháp nào khó định vị nhất; hình mask dự đoán và mask thật; ca sai | Bảng so sánh, hình minh hoạ |
-| 12 | 28/12 – 03/01 | Demo Gradio: RetinaFace cắt mặt **giống lúc train**, dự đoán mask, dán ngược lên video, biểu đồ diện tích vùng giả theo thời gian | Demo chạy được |
-| 13 | 04/01 – 10/01 | Viết chương 1–3: tổng quan, cơ sở lý thuyết segmentation, dữ liệu và phương pháp | Bản nháp chương 1–3 |
-| 14 | 11/01 – 17/01 | Viết chương 4–5: thực nghiệm, kết luận; dọn code, viết README | Báo cáo và mã nguồn hoàn chỉnh |
-| 15 | 18/01 – 24/01 | Slide, video demo dự phòng, tập trình bày | Slide và bản trình bày |
+### Việc cần làm
+- [ ] Gửi yêu cầu và tải FaceForensics++ (bộ dữ liệu chỉ dùng cho nghiên cứu, cần tuân thủ điều khoản sử dụng).
+- [ ] Tải các phần:
+  - Video gốc (original sequences, 1000 video)
+  - Video giả của 4 phương pháp: Deepfakes, Face2Face, FaceSwap, NeuralTextures
+  - **Video mask** của từng phương pháp
+- [ ] Bắt đầu với mức nén **c23**; tải thêm **c40** cho thí nghiệm mức nén.
+- [ ] Tải file chia dữ liệu chính thức (720 / 140 / 140 video cho train / val / test).
+- [ ] Kiểm tra: số lượng video, số khung hình, video mask khớp với video giả (cùng số khung, cùng kích thước).
 
-Nếu chậm tiến độ: dùng tuần 7 để bù trước. Nếu vẫn trễ thì bỏ SegFormer và so sánh 2 kiến trúc CNN. Phần train có thể chuyển lên Kaggle (GPU T4/P100) để nhanh hơn.
+### Lưu ý
+- Mask mỗi phương pháp có hình dạng khác nhau: Deepfakes, FaceSwap, Face2Face thường phủ gần cả khuôn mặt; NeuralTextures chủ yếu quanh vùng miệng.
+- Nếu phương pháp nào thiếu mask: tạo mask bằng hiệu ảnh giữa khung hình giả và khung hình thật tương ứng, lấy ngưỡng, làm mịn bằng phép toán hình thái học.
 
-## 9. Kết quả
+---
 
-Cả ba mô hình train trên FF++ c23, 10 epoch, cùng dữ liệu, augment, loss và tiêu chí chọn `best.pt`; chỉ khác learning rate và weight decay theo config.
+## 4. Giai đoạn 2: Tiền xử lý
 
-| Mô hình | `best.pt` | Thời gian train (RTX 3050 4 GB) |
-| --- | --- | --- |
-| U-Net (EfficientNet-B0) | epoch 8 | khoảng 3 tiếng |
-| DeepLabV3+ (EfficientNet-B0) | epoch 7 | khoảng 2,6 tiếng |
-| SegFormer-B0 (MiT-B0) | epoch 9 | khoảng 4 tiếng |
+### Các bước
+1. **Trích khung hình:** mỗi video lấy 20–32 khung hình rải đều. Dùng **cùng chỉ số khung hình** cho video giả và video mask.
+2. **Phát hiện mặt:** chạy RetinaFace trên khung hình, lấy khuôn mặt lớn nhất.
+3. **Cắt mặt:** mở rộng hộp mặt 1,3 lần, cắt hình vuông. **Áp dụng đúng vùng cắt đó lên mask.**
+4. **Resize:** ảnh 224×224 (khớp Swin-T window 7). Mask resize bằng nội suy *nearest*.
+5. **Nhị phân hóa mask:** chọn ngưỡng (ví dụ > 127), kiểm tra bằng mắt.
+6. **Ảnh thật:** gán mask toàn số 0.
+7. **Lưu metadata** (CSV):
 
-### 9.1. Tổng hợp trên 3 tập test
+| Cột | Ý nghĩa |
+|---|---|
+| `img_path`, `mask_path` | Đường dẫn ảnh và mask |
+| `label_bin` | 0 = thật, 1 = giả |
+| `label_cls` | 0 = Real, 1 = Deepfakes, 2 = Face2Face, 3 = FaceSwap, 4 = NeuralTextures |
+| `video_id`, `frame_idx` | Mã video, chỉ số khung hình |
+| `method`, `compression` | Phương pháp, mức nén |
+| `bbox` | Tọa độ vùng cắt (dùng để ghép mask về khung hình gốc) |
 
-| Tập test | Mô hình | IoU | Dice | Precision | Recall | F1 | Pixel-AUC | Báo nhầm mặt thật |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| FF++ c23 | U-Net | **0,911** | **0,937** | 0,975 | **0,934** | **0,954** | 0,996 | 6,0% |
-| FF++ c23 | DeepLabV3+ | 0,906 | 0,932 | **0,978** | 0,926 | 0,951 | **0,997** | 5,9% |
-| FF++ c23 | SegFormer-B0 | 0,907 | 0,935 | 0,973 | 0,932 | 0,952 | **0,997** | **5,5%** |
-| FF++ c40 | U-Net | **0,606** | **0,638** | **0,961** | **0,617** | **0,752** | **0,972** | 14,5% |
-| FF++ c40 | DeepLabV3+ | 0,568 | 0,599 | **0,961** | 0,574 | 0,719 | 0,966 | 13,3% |
-| FF++ c40 | SegFormer-B0 | 0,522 | 0,553 | 0,955 | 0,533 | 0,684 | 0,964 | **11,0%** |
-| DFD (kiểm tra chéo) | U-Net | **0,560** | **0,643** | 0,737 | **0,749** | **0,743** | **0,951** | 20,4% |
-| DFD (kiểm tra chéo) | DeepLabV3+ | 0,533 | 0,612 | **0,741** | 0,712 | 0,726 | 0,947 | **17,7%** |
-| DFD (kiểm tra chéo) | SegFormer-B0 | 0,524 | 0,609 | 0,714 | 0,727 | 0,720 | 0,946 | 20,6% |
+### Kiểm soát chất lượng
+- [ ] Trực quan hóa ngẫu nhiên khoảng 50 cặp ảnh + mask chồng lên nhau, kiểm tra mask khớp đúng vị trí.
+- [ ] Chia dữ liệu **theo video**, không theo khung hình (tránh rò rỉ dữ liệu).
+- [ ] Xử lý mất cân bằng: số video giả gấp 4 lần video thật → lấy nhiều khung hình hơn từ video thật hoặc dùng `WeightedRandomSampler`.
 
-### 9.2. IoU theo phương pháp giả (FF++ test)
+---
 
-| Phương pháp | U-Net c23 | DeepLabV3+ c23 | SegFormer c23 | U-Net c40 | DeepLabV3+ c40 | SegFormer c40 |
-| --- | --- | --- | --- | --- | --- | --- |
-| Deepfakes | **0,923** | 0,915 | 0,910 | **0,798** | 0,767 | 0,725 |
-| Face2Face | 0,932 | 0,932 | **0,936** | **0,513** | 0,444 | 0,398 |
-| FaceSwap | **0,930** | 0,925 | 0,923 | **0,779** | 0,760 | 0,745 |
-| NeuralTextures | **0,860** | 0,853 | 0,859 | **0,332** | 0,299 | 0,216 |
+## 5. Giai đoạn 3: Baseline Swin-T + UPerNet
 
-### 9.3. Độ bền với JPEG, blur, noise (FF++ test c23, `src/robustness.py`)
+### Kiến trúc
+- **Encoder:** Swin-T, tiền huấn luyện ImageNet. Có thể khởi tạo cả encoder và decoder từ checkpoint UPerNet + Swin-T đã huấn luyện trên ADE20K để hội tụ nhanh hơn.
+- **Decoder:** UPerNet (Pyramid Pooling Module + FPN) nhận đặc trưng 4 tỉ lệ (1/4, 1/8, 1/16, 1/32).
+- **Đầu ra:** 1 kênh (logit mask), phóng to về kích thước ảnh đầu vào.
 
-| Làm hỏng | IoU U-Net | IoU DeepLabV3+ | IoU SegFormer | Báo nhầm U-Net | Báo nhầm DeepLabV3+ | Báo nhầm SegFormer |
-| --- | --- | --- | --- | --- | --- | --- |
-| Ảnh gốc | 0,911 | 0,906 | 0,907 | 6,0% | 5,8% | 5,5% |
-| JPEG 50 | **0,875** | 0,859 | 0,863 | 11,2% | **9,5%** | 11,5% |
-| JPEG 30 | **0,836** | 0,806 | 0,822 | 12,3% | **10,7%** | 13,7% |
-| JPEG 10 | **0,469** | 0,444 | 0,400 | 4,9% | 5,1% | 4,7% |
-| Blur kernel 7 | 0,881 | 0,860 | **0,886** | 10,4% | **7,1%** | 12,8% |
-| Blur kernel 11 | 0,890 | 0,878 | 0,890 | 38,8% | **26,5%** | 35,4% |
-| Blur kernel 15 | 0,897 | 0,888 | 0,897 | 86,8% | 84,0% | **68,3%** |
-| Blur kernel 21 | 0,869 | 0,848 | **0,892** | 99,0% | 99,1% | **93,2%** |
-| Noise 0,05 | **0,850** | 0,827 | 0,826 | 18,7% | 16,5% | **16,0%** |
-| Noise 0,15 | **0,680** | 0,601 | 0,616 | 29,9% | 23,1% | **20,8%** |
+### Hàm mất mát
+```
+L_seg = BCE(mask_pred, mask_gt) + Dice(mask_pred, mask_gt)
+```
 
-Bảng đầy đủ theo từng phương pháp nằm ở `runs/<run>/robustness/robustness.md`.
+### Cấu hình huấn luyện khởi đầu
 
-![Độ bền của U-Net](docs/figures/unet_robustness.png)
+| Tham số | Giá trị gợi ý |
+|---|---|
+| Kích thước ảnh | 224×224 |
+| Optimizer | AdamW |
+| Learning rate | 1e-4 (encoder có thể thấp hơn, ví dụ 5e-5) |
+| Weight decay | 0,01–0,05 |
+| Lịch learning rate | Warmup 1–2 epoch, sau đó cosine |
+| Số epoch | 30–50, dừng sớm theo IoU trên tập val |
+| Batch size | 16 (giảm nếu thiếu bộ nhớ, dùng gradient accumulation) |
+| Mixed precision | Bật (AMP) |
 
-![Độ bền của DeepLabV3+](docs/figures/deeplabv3plus_robustness.png)
+### Tăng cường dữ liệu (áp dụng biến đổi hình học đồng thời cho ảnh và mask)
+- Lật ngang
+- Thay đổi nhẹ độ sáng, độ tương phản
+- Nén JPEG ngẫu nhiên, làm mờ Gaussian, nhiễu nhẹ (giúp bền với mức nén)
 
-![Độ bền của SegFormer-B0](docs/figures/segformer_b0_robustness.png)
+### Kết quả cần có
+- [ ] Bảng kết quả baseline trên c23: IoU, Dice, pixel-AUC
+- [ ] Hình trực quan hóa mask dự đoán so với mask thật
+- [ ] Phân tích lỗi: phương pháp nào kém nhất, lỗi thường gặp ở đâu (biên, vùng nhỏ...)
 
-### 9.4. Hình minh hoạ và ca sai (`src/visualize.py`)
+---
 
-Hình nằm ở `runs/<run>/figures/` và không đưa lên git, vì chứa khuôn mặt trong dữ liệu FF++ (giấy phép không cho chia sẻ công khai). Mỗi hình có các cột: ảnh, mask thật, xác suất dự đoán, sai số (xanh dương là đúng, cam là tô thừa, xanh ngọc là bỏ sót).
+## 6. Giai đoạn 4: Cải tiến từng bước
 
-| File | Nội dung |
-| --- | --- |
-| `test_random_<phương pháp>.png` | 6 ảnh ngẫu nhiên mỗi phương pháp |
-| `test_worst_<phương pháp>.png` | 6 ca IoU thấp nhất, mỗi video một frame |
-| `test_worst_original.png` | Mặt thật bị báo nhầm nhiều nhất |
-| `dfd_worst_DFD.png`, `dfd_worst_actors.png` | Ca sai nhiều nhất khi kiểm tra chéo |
+Nguyên tắc: **mỗi lần chỉ thêm một thành phần**, giữ nguyên các thiết lập khác, để đo chính xác đóng góp của thành phần đó.
 
-### 9.5. Nhận xét
+### B1. Học đa nhiệm (thêm đầu phân loại)
+- **Mục đích:** để nhiệm vụ phân loại hỗ trợ việc học đặc trưng cho segment.
+- **Cách làm:** lấy đặc trưng tầng cuối của encoder (1/32), Global Average Pooling, gắn 2 đầu:
+  - Đầu nhị phân: 1 nút, BCE
+  - Đầu đa lớp: 5 nút, Cross-Entropy
+- **Hàm mất mát:**
+  ```
+  L = L_seg + λ1·L_bin + λ2·L_cls     (khởi đầu λ1 = λ2 = 0,5)
+  ```
+- **Đánh giá thêm:** Accuracy, AUC (nhị phân); F1 từng lớp, ma trận nhầm lẫn (đa lớp).
 
-- **Ba kiến trúc ngang nhau trên dữ liệu cùng phân phối.** Trên FF++ c23, IoU nằm trong khoảng 0,906–0,911 (chênh 0,5 điểm) và báo nhầm 5,5–6,0%. SegFormer-B0 báo nhầm ít nhất (5,5%) dù ít tham số nhất. NeuralTextures khó nhất với cả ba mô hình (IoU khoảng 0,85–0,86) vì chỉ sửa tinh vi vùng biểu cảm.
-- **U-Net bền nhất khi ảnh bị nén hoặc nhiễu; SegFormer kém nhất khi nén.** Trên c40, IoU giảm theo thứ tự U-Net 0,606 > DeepLabV3+ 0,568 > SegFormer 0,522. NeuralTextures ở c40 chỉ còn 0,216 với SegFormer. U-Net cũng có IoU cao nhất ở mọi mức JPEG và ở noise từ 0,05 trở lên. Một giải thích hợp lý là skip connection của U-Net giữ chi tiết ở độ phân giải cao, còn SegFormer dự đoán ở 1/4 độ phân giải rồi phóng to; giả thuyết này cần kiểm chứng thêm.
-- **Đổi lại, SegFormer báo nhầm ít hơn khi ảnh suy giảm.** SegFormer có tỉ lệ báo nhầm thấp nhất trên c40 (11,0%), ở noise 0,15 (20,8% so với 23–30%) và ở blur mạnh (68% so với 84–87% ở kernel 15). Mô hình transformer có vẻ "thận trọng" hơn: khi ảnh xấu thì tô ít hơn, nên vừa ít báo nhầm vừa bỏ sót nhiều hơn.
-- **Nén mạnh làm mô hình bỏ sót chứ không tô sai.** Ở c40, precision của cả ba vẫn khoảng 0,96 nhưng recall giảm còn 0,53–0,62. Ở JPEG 10, mô hình gần như không tô gì: IoU 0,40–0,47 và báo nhầm chỉ khoảng 5%.
-- **Blur mạnh làm IoU cao giả tạo.** Từ kernel 11, cả ba mô hình chuyển dần sang "tô cả khuôn mặt": báo nhầm tăng lên 27–39% rồi 68–87% (kernel 15) và 93–99% (kernel 21). IoU của Face2Face và NeuralTextures lại tăng vì mask hai loại này phủ cả mặt. Đây là minh chứng cho việc **luôn phải báo IoU kèm tỉ lệ báo nhầm**.
-- **Noise ảnh hưởng nặng tới NeuralTextures** (IoU giảm từ khoảng 0,86 xuống 0,35–0,44 ở noise 0,15) và làm báo nhầm tăng đều.
-- **Kiểm tra chéo trên DFD kém rõ rệt với cả ba** (IoU 0,52–0,56, báo nhầm 18–21%). Kiến trúc transformer không giúp tổng quát hoá sang kiểu deepfake mới. Trong `dfd_worst_DFD.png`, nhiều frame giả của DFD **không được tô chút nào** (IoU 0). Mask DFD gần chữ nhật, khác hình dạng mask của Face2Face, FaceSwap và NeuralTextures. Phân tích theo cặp diễn viên ở mục 9.6.
-- **Frame đầu và cuối video khó hơn** với NeuralTextures, Face2Face và DFD (mục 9.6).
+### B2. Thêm nhánh CNN (EfficientNet-B0)
+- **Mục đích:** bù đắp chi tiết cấp thấp (viền ghép, kết cấu da) mà Swin làm mờ do chia patch 4×4.
+- **Cách làm:**
+  - EfficientNet-B0 (`timm`, `features_only=True`) chạy song song với Swin-T, lấy đặc trưng ở 4 tỉ lệ:
+    - B0: 24, 40, 112, 320 kênh
+    - Swin-T: 96, 192, 384, 768 kênh
+  - Ở mỗi tỉ lệ: nối (concat) → Conv 1×1 → BatchNorm → ReLU, đưa về số kênh của Swin.
+  - Đặc trưng hợp nhất đưa vào UPerNet như cũ.
+- **Mở rộng (tùy chọn):** thay concat bằng cross-attention giữa hai nhánh.
 
-### 9.6. Phân tích lỗi (`src/analyze.py`)
+### B3. Thêm nhánh dự đoán biên
+- **Mục đích:** làm sắc biên mask, tập trung vào viền ghép mặt (nơi lộ dấu vết rõ nhất).
+- **Cách làm:**
+  - Tạo nhãn biên từ mask thật bằng gradient hình thái học: `edge = dilate(mask) − erode(mask)` (kernel 3–5).
+  - Gắn đầu dự đoán biên vào đặc trưng độ phân giải cao (1/4) của decoder.
+  - Hàm mất mát: BCE có trọng số (vì pixel biên rất ít) hoặc Dice.
+  ```
+  L = L_seg + λ1·L_bin + λ2·L_cls + λ3·L_edge     (khởi đầu λ3 = 1,0)
+  ```
+- Ý tưởng tham khảo từ MVSS-Net và Face X-ray.
 
-**Theo vị trí frame.** Mỗi video có 32 frame lấy cách đều. IoU ảnh giả ở frame đầu, frame cuối và trung bình các frame giữa:
+### B4. Thêm nhánh tần số
+- **Mục đích:** tăng độ bền khi video bị nén nặng (c40).
+- **Cách làm:**
+  - Lọc ảnh qua 3 bộ lọc SRM cố định (hoặc biến đổi DCT theo khối 8×8).
+  - Một CNN nhỏ trích đặc trưng từ ảnh đã lọc.
+  - Hợp nhất vào các tỉ lệ 1/4 và 1/8 theo cách giống B2.
+- **Đánh giá trọng tâm:** so sánh trên c40.
 
-| Phương pháp | Vị trí | U-Net | DeepLabV3+ | SegFormer-B0 |
-| --- | --- | --- | --- | --- |
-| Deepfakes | đầu / giữa / cuối | 0,921 / 0,923 / 0,918 | 0,918 / 0,915 / 0,913 | 0,906 / 0,911 / 0,904 |
-| Face2Face | đầu / giữa / cuối | 0,915 / 0,933 / 0,913 | 0,920 / 0,932 / 0,927 | 0,919 / 0,938 / 0,909 |
-| FaceSwap | đầu / giữa / cuối | 0,924 / 0,930 / 0,927 | 0,898 / 0,926 / 0,911 | 0,911 / 0,923 / 0,919 |
-| NeuralTextures | đầu / giữa / cuối | 0,802 / 0,864 / 0,792 | 0,733 / 0,858 / 0,798 | 0,756 / 0,864 / 0,797 |
-| DFD | đầu / giữa / cuối | 0,489 / 0,566 / 0,439 | 0,433 / 0,541 / 0,384 | 0,433 / 0,532 / 0,382 |
+### B5. Tùy chọn (nếu còn thời gian)
+- Thêm đặc trưng độ phân giải 1/2 vào decoder để tinh chỉnh mask.
+- Thay Swin-T bằng Swin-S hoặc Swin V2.
+- Làm mượt mask theo thời gian khi suy luận video (trung bình vài khung hình liên tiếp).
 
-- NeuralTextures và DFD giảm 6–15 điểm ở frame đầu và cuối, ở **cả ba mô hình**; Deepfakes và FaceSwap gần như không đổi. Ảnh hưởng lên IoU tổng nhỏ (2/32 frame mỗi video).
-- Đã loại trừ ba nguyên nhân (đo trên video FF++ test, so frame giả với frame gốc cùng chỉ số):
-  - Diện tích mask không khác (NeuralTextures 0,327 / 0,327 / 0,325).
-  - Mức chỉnh sửa không yếu hơn: chênh lệch pixel trung bình trong mask NeuralTextures là 5,9 / 5,8 / 6,1.
-  - Mask không lệch ở frame đầu. Ở frame cuối, phần bị sửa nằm ngoài mask tăng lên (NeuralTextures 34% → 46%), nhưng tăng cả ở FaceSwap (5% → 12%), loại vẫn có IoU frame cuối bình thường, nên không giải thích được.
-- Chưa kiểm chứng: frame đầu thường là keyframe (I-frame), được nén khác các frame còn lại. Cần đọc loại frame (PyAV hoặc ffprobe) để kiểm tra.
-- Không bỏ frame đầu và cuối khỏi tập test; demo lấy trung bình xác suất 5 frame liền kề để giảm ảnh hưởng.
+---
 
-**DFD theo cặp diễn viên** (đích_nguồn, 293 cặp):
+## 7. Bảng ablation (điền kết quả)
 
-- IoU theo cặp **tương quan 0,91–0,96 giữa ba mô hình**: cặp khó thì khó với mọi kiến trúc, nên độ khó nằm ở dữ liệu chứ không ở mô hình.
-- Trung vị IoU theo cặp là 0,545; 16 cặp dưới 0,3, chỉ 4 cặp trên 0,8. Kém nhất: `07_11` (IoU khoảng 0,02 với cả ba mô hình), `27_09`, `07_26`. Tốt nhất: `12_18`, `14_12` (khoảng 0,87).
-- Không có diễn viên nào một mình kéo kết quả xuống: IoU trung bình theo diễn viên đích là 0,43–0,71, theo diễn viên nguồn là 0,42–0,66.
-- Cặp `01_02`, nơi tập trung 6 ca sai nhất của SegFormer, chỉ xếp hạng 68/293. Đó là do cách chọn hình minh hoạ, không phải cặp đặc biệt khó.
-- U-Net bỏ sót gần như hoàn toàn (IoU < 0,05) 133/3.068 video DFD (4,3%).
+### Segment (mức nén c23)
 
-### 9.7. Demo (`src/demo.py`)
+| Mô hình | IoU | Dice | Pixel-AUC | Số tham số | Thời gian/ảnh |
+|---|---|---|---|---|---|
+| Baseline: Swin-T + UPerNet | | | | | |
+| + B1 (đa nhiệm) | | | | | |
+| + B1 + B2 (nhánh CNN) | | | | | |
+| + B1 + B2 + B3 (nhánh biên) | | | | | |
+| + B1 + B2 + B3 + B4 (nhánh tần số) | | | | | |
 
-Tải video lên rồi chọn mô hình. Ngoài video tô vùng giả, demo hiện 6 frame dạng ảnh mặt | bản đồ xác suất từng pixel | vùng vượt ngưỡng, và biểu đồ diện tích vùng giả cùng xác suất lớn nhất trên mặt theo thời gian. Mỗi frame được cắt mặt giống hệt lúc train (RetinaFace, nới khung 1,3 lần, 256×256). Xác suất được lấy trung bình 5 frame liền kề rồi dán ngược lên frame gốc. Kết quả gồm video phủ đỏ bán trong suốt (alpha 0,5) và viền vùng giả (WebM, vì OpenCV pip không ghi được H.264), biểu đồ diện tích vùng giả theo thời gian và tóm tắt. Video dài được lấy cách đều tối đa 300 frame; mỗi frame chỉ xét mặt lớn nhất.
+### Phân loại (mức nén c23)
 
-Chạy thử với U-Net trên video FF++ test (khoảng 35 giây cho 160–180 frame):
+| Mô hình | Acc nhị phân | AUC nhị phân | Acc đa lớp | F1 macro đa lớp |
+|---|---|---|---|---|
+| Baseline + B1 | | | | |
+| + B2 | | | | |
+| + B3 | | | | |
+| + B4 | | | | |
 
-| Video | Frame bị tô (> 1% mặt) | Diện tích trung bình |
-| --- | --- | --- |
-| NeuralTextures `953_974` | 100% | 33,9% |
-| Gốc `953` | 0% | 0,0% |
+Lặp lại hai bảng trên cho **c40**.
 
-### 9.8. Kết luận thật/giả cả video (`analyze.py --split video`)
+---
 
-Đề tài là segmentation, nhưng demo cần kết luận cho cả video. Quy tắc: video **giả** nếu tỉ lệ frame có vùng giả (> 1% diện tích mặt) ≥ ngưỡng. Ngưỡng chọn trên **FF++ val** theo độ chính xác cân bằng (val có 4 video giả cho mỗi video thật); test và DFD chỉ dùng để đo. Mỗi video dùng 32 frame như lúc đánh giá.
+## 8. Giai đoạn 5: Thí nghiệm bổ sung
 
-| Mô hình | Ngưỡng | FF++ test: đúng video thật / giả | FF++ test: AUC | DFD: đúng video thật / giả | DFD: AUC |
-| --- | --- | --- | --- | --- | --- |
-| U-Net | ≥ 78% frame | 99,3% / 95,7% | 0,992 | **94,2%** / 68,6% | **0,903** |
-| DeepLabV3+ | ≥ 75% frame | 99,3% / 95,5% | 0,993 | 92,8% / 65,1% | 0,896 |
-| SegFormer-B0 | ≥ 59% frame | 99,3% / **97,1%** | 0,993 | 89,8% / **76,5%** | 0,891 |
+- [ ] **So sánh decoder** (cùng encoder Swin-T): U-Net, U-Net++, DeepLabV3+, UPerNet.
+- [ ] **So sánh encoder** (cùng decoder): EfficientNet-B0, ResNet-50, Swin-T.
+- [ ] **Theo từng phương pháp làm giả:** IoU, Dice riêng cho Deepfakes, Face2Face, FaceSwap, NeuralTextures.
+- [ ] **Theo mức nén:** c23 so với c40.
+- [ ] **Kiểm thử chéo** (tùy chọn): đánh giá khả năng phân loại trên Celeb-DF v2 (bộ này chủ yếu dùng cho phân loại nếu không có mask).
 
-FF++ test có 140 video thật và 558 video giả; DFD có 363 video thật và 3.068 video giả.
+---
 
-- Trên FF++, quy tắc gần như luôn đúng (độ chính xác cân bằng 97–98%).
-- Trên DFD, khoảng 1/4 đến 1/3 số video giả bị bỏ sót, vì mô hình không tô được kiểu deepfake mới (mục 9.5).
-- Ngưỡng của SegFormer thấp hơn (59%), nên nó bắt được nhiều video giả DFD hơn nhưng báo nhầm video thật nhiều hơn. AUC trên DFD của ba mô hình gần như bằng nhau (0,89–0,90).
-- Demo in kết luận kèm bằng chứng: tỉ lệ frame có vùng giả so với ngưỡng, diện tích và xác suất cao nhất, bản đồ xác suất từng pixel, bảng độ tin cậy ở trên, và cảnh báo khi tỉ lệ nằm gần ngưỡng (±10 điểm).
-- Dưới ngưỡng, quy tắc **không chứng minh được video là thật**. Vì vậy demo có 3 mức: **GIẢ** (≥ ngưỡng), **NGHI NGỜ** (nhiều frame bị tô hơn 95% video thật của val: U-Net ≥ 47%, DeepLabV3+ ≥ 38%, SegFormer ≥ 41%), và **KHÔNG ĐỦ DẤU HIỆU GIẢ**.
-- **Hạn chế: video do AI tạo trọn vẹn** (video TikTok khuôn mặt AI, thử ngày 14/10). U-Net chỉ tô vùng giả ở 27% số frame, thành từng đợt, nên kết luận là không đủ dấu hiệu. Mô hình học dấu vết ghép/sửa mặt của FF++; video sinh trọn khung hình không có đường ghép. Mô hình cũng không phân biệt được filter làm đẹp với deepfake (một video TikTok có filter bị tô 99% số frame).
-- Demo dùng tới 300 frame đã làm trơn thay vì 32 frame. Kiểm tra trên 12 video FF++ test ngẫu nhiên (2 video mỗi phương pháp giả, 4 video thật) với U-Net: **12/12 cùng kết luận**. Làm trơn chỉ làm tỉ lệ frame tăng nhẹ ở video giả (ví dụ 90,6% lên 96,3%) và giảm ở video thật (3,1% xuống 0%).
+## 9. Giai đoạn 6: Suy luận trên video và demo
 
-### 9.9. Mô hình 2: phát hiện video do AI tạo (`preprocess_ai.py`, `train_ai.py`)
+1. Đọc video, trích khung hình.
+2. Phát hiện và cắt mặt, lưu tọa độ vùng cắt.
+3. Chạy mô hình: mask + nhãn thật/giả + phương pháp.
+4. Ghép mask về khung hình gốc theo tọa độ đã lưu.
+5. Làm mượt mask theo thời gian.
+6. Xuất video có tô màu vùng giả, kèm nhãn và xác suất ở mức video (trung bình các khung hình).
 
-Bài toán khác Mô hình 1: video do AI tạo trọn vẹn không có mask (mọi pixel đều do AI sinh), nên chỉ phân loại thật hay AI theo từng frame rồi gộp theo video. Lời giải thích là Grad-CAM, tức **vùng mô hình dựa vào để quyết định**; nó không phải vùng bị làm giả và không đo được bằng IoU.
+---
 
-- **Dữ liệu AI**: [TalkingHeadBench](https://huggingface.co/datasets/luchaoqi/TalkingHeadBench) (WACV 2026, license MIT), gồm ảnh chân dung FFHQ được AI làm cử động. 6 bộ sinh dùng để train/val/test với người không trùng nhau: LivePortrait, AniPortrait (Audio/Video), Hallo, Hallo2, EmoPortrait. Hallo3 và MAGI-1 (thương mại) chỉ dùng để test. Chỉ tải phần video giả (5,5 GB).
-- **Dữ liệu thật**: bộ dữ liệu không đóng gói video thật. Dùng FF++ youtube theo split chính thức (không lẫn với tập test của Mô hình 1) và video diễn viên DFD, chia theo diễn viên: 01–16 train, 17–20 val, 21–28 test.
-- **Mô hình**: EfficientNet-B0 pretrained ImageNet (timm), mặt cắt bằng RetinaFace như Mô hình 1, 16 frame mỗi video AI. Điểm video là trung bình xác suất các frame; ngưỡng chọn trên val.
+## 10. Đánh giá và báo cáo
 
-**Hai "đường tắt" đã phát hiện và chặn**:
-1. **Viền đen**: video AI là cận cảnh mặt nên khung cắt nới 1,3 lần bị tràn ra ngoài ảnh. 74% ảnh AI có viền đen, so với 6% ảnh thật. Cách chặn: Mô hình 2 chỉ dùng khung mặt (còn 10% / 0%), và khi train tô đen ngẫu nhiên mép ảnh ở cả hai lớp.
-2. **Nguồn video**: khi chỉ dùng video thật FF++ (lần 1, `runs/ai_effb0_ffonly`), mô hình học "không phải video tin tức = AI" và **chỉ nhận đúng 28,4% video thật DFD**. Thêm diễn viên DFD vào lớp thật (lần 2, `runs/ai_effb0`) thì nhận đúng 99,0%.
+### Chỉ số
+- **Segment:** IoU, Dice (F1 mức pixel), pixel-AUC
+- **Nhị phân:** Accuracy, AUC (mức khung hình và mức video)
+- **Đa lớp:** Accuracy, F1 từng lớp, F1 macro, ma trận nhầm lẫn
 
-| Tập kiểm tra (theo video) | Lần 1: thật chỉ có FF++ | Lần 2: thật = FF++ + diễn viên DFD |
-| --- | --- | --- |
-| Thật FF++ test (140) | 99,3% | 99,3% |
-| AI, bộ sinh đã gặp, người mới (845) | 99,5% | 98,9% |
-| AI, Hallo3 chưa gặp (10) | 100% | 90% |
-| AI, MAGI-1 thương mại chưa gặp (66) | 100% | 100% |
-| **Thật, diễn viên DFD chưa gặp (101)** | **28,4%** | **99,0%** |
+### Trực quan hóa cần có trong báo cáo
+- Ảnh gốc | mask thật | mask dự đoán của baseline | mask dự đoán của mô hình cải tiến
+- Biểu đồ đường loss và IoU qua các epoch
+- Ma trận nhầm lẫn đa lớp
+- Các trường hợp mô hình dự đoán sai và phân tích nguyên nhân
 
-Lần 2: ngưỡng 0,25, best ở epoch 4; AUC theo video là 0,999 (test) và 0,998 (extra).
+---
 
-**Thử trên video ngoài bộ dữ liệu (14/10, video TikTok và video tự quay bằng điện thoại): chưa đạt.**
-- Video tự quay (thật) bị Mô hình 2 cho là AI (điểm 0,67).
-- Video TikTok khuôn mặt AI mà người dùng cho là giả có điểm 0,00.
+## 11. Tiến độ dự kiến (điều chỉnh theo thời gian thực tế)
 
-Lý do: lớp thật chỉ có 2 nguồn (tin tức, diễn viên quay theo kịch bản), và lớp AI chỉ có kiểu talking-head làm từ ảnh chân dung. Video điện thoại, filter làm đẹp và các công cụ AI khác nằm ngoài cả hai lớp. Hướng tiếp theo:
-- Thêm video thật đa dạng: CelebV-HQ (tải từ YouTube) hoặc video tự quay có nhãn.
-- Thêm video AI loại khác: GenVideo-100K hoặc video tự tạo bằng công cụ AI có nhãn.
+| Tuần | Công việc |
+|---|---|
+| 1 | Tải dữ liệu, cài đặt môi trường, đọc tài liệu |
+| 2–3 | Tiền xử lý, kiểm tra chất lượng mask |
+| 4–5 | Baseline Swin-T + UPerNet, phân tích lỗi |
+| 6 | B1: học đa nhiệm |
+| 7 | B2: nhánh CNN |
+| 8 | B3: nhánh biên |
+| 9 | B4: nhánh tần số, thí nghiệm c40 |
+| 10 | Thí nghiệm bổ sung (so sánh decoder, encoder, từng phương pháp) |
+| 11 | Suy luận video, demo |
+| 12 | Viết báo cáo, chuẩn bị slide |
 
-## 10. Tình trạng (cập nhật 13/10/2026)
+---
 
-- [x] Môi trường: Python 3.12 (`.venv`), PyTorch 2.14 CUDA 13.0, segmentation_models_pytorch, transformers, albumentations, batch-face
-- [x] Tải toàn bộ dữ liệu TUM: 5.000 video c23 FF++, mask 4 phương pháp, DFD giả/thật và mask (75 GB)
-- [x] Tải bản c40 để test độ bền (5000 + 3068 + 363 video, khoảng 4,3 GB)
-- [x] Split chính thức FF++ (`data/splits/`)
-- [x] Viết `preprocess.py`, thử trên 21 video
-- [x] Tiền xử lý toàn bộ 8.431 video c23 (`data/faces/`)
-- [x] Tiền xử lý bản c40 (`data/faces_c40/`, `data/index_c40/`)
-- [x] Viết `build_index.py`, `dataset.py`, `metrics.py`, `models.py`, `train.py`, `evaluate.py`, `check_data.py`, 3 file config
-- [x] Chạy `build_index.py` và `check_data.py` trên dữ liệu mới, đo tỉ lệ vùng giả sau khi cắt
-- [x] Chạy thử U-Net trên 5% dữ liệu mới
-- [x] Train và đánh giá U-Net (test c23, c40, DFD)
-- [x] Train và đánh giá DeepLabV3+ (test c23, c40, DFD)
-- [x] Train và đánh giá SegFormer-B0 (test c23, c40, DFD)
-- [x] Viết `robustness.py` (JPEG 90–10, blur kernel 3–21, noise 0,02–0,15) và `visualize.py` (ngẫu nhiên, ca sai nhiều nhất)
-- [x] Chạy `robustness.py` và `visualize.py` đầy đủ cho U-Net và DeepLabV3+
-- [x] Chạy `robustness.py` và `visualize.py` cho SegFormer-B0
-- [x] Thêm hướng dẫn và notebook train trên Kaggle (`kaggle/train_kaggle.ipynb`)
-- [x] Phân tích lỗi theo vị trí frame và cặp diễn viên DFD (`analyze.py`)
-- [x] Demo Gradio (`demo.py`), chạy thử trên video FF++ test
-- [x] Kết luận thật/giả cả video kèm bằng chứng (ngưỡng chọn trên val, đo trên test và DFD)
-- [x] Mô hình 2 (video do AI tạo): TalkingHeadBench + EfficientNet-B0 + Grad-CAM, chặn 2 đường tắt, đưa vào demo
-- [ ] Mô hình 2: thêm video thật và video AI đa dạng hơn (video điện thoại/TikTok vẫn sai)
-- [ ] Báo cáo, slide
-
-## 11. Rủi ro và lưu ý
+## 12. Rủi ro và cách xử lý
 
 | Rủi ro | Cách xử lý |
-| --- | --- |
-| Server TUM hay sập hoặc chậm (sập khoảng 1 ngày, 10–11/10) | Dữ liệu đã tải đủ. `download_all.ps1` tự chờ server, script tải có thử lại và tải song song 8 luồng |
-| GPU chỉ 4 GB | Mô hình nhẹ (3,7–6,3M tham số), AMP, batch 16; có thể chuyển lên Kaggle |
-| IoU cao giả tạo trên Face2Face/NeuralTextures (mask phủ cả mặt) | Luôn báo IoU kèm tỉ lệ báo nhầm; chọn checkpoint theo điểm kết hợp |
-| Demo cắt mặt khác lúc train làm kết quả sai | Dùng lại đúng hàm cắt của `preprocess.py` (RetinaFace, nới 1,3 lần, 256×256) |
-| Video xem trên Windows báo lỗi 0x80004005 | Video là H.264 4:4:4; dùng VLC để xem, OpenCV để đọc trong code |
-| Giấy phép dữ liệu | FF++ và DFD chỉ cho nghiên cứu: không chia sẻ dữ liệu, không tạo deepfake người chưa đồng ý |
-| Demo không tuyệt đối | Hiển thị bản đồ xác suất và cảnh báo "có thể sai" |
+|---|---|
+| Thiếu bộ nhớ GPU | Giảm batch size, bật AMP, gradient accumulation, gradient checkpointing |
+| Mask lệch so với ảnh | Kiểm tra đồng bộ chỉ số khung hình và vùng cắt; trực quan hóa trước khi huấn luyện |
+| Rò rỉ dữ liệu | Chia theo video theo split chính thức |
+| Quá khớp (overfitting) | Tăng cường dữ liệu, weight decay, dừng sớm |
+| Mất cân bằng lớp, mất cân bằng pixel | Lấy mẫu cân bằng; Dice loss; BCE có trọng số |
+| NeuralTextures khó segment (vùng nhỏ) | Nhánh biên, attention, ảnh đầu vào lớn hơn |
+| Swin huấn luyện không ổn định | Learning rate nhỏ, warmup, gradient clipping |
+| Hết thời gian | Ưu tiên baseline + B1 + B2 + B3; B4, B5 là phần mở rộng |
 
-## 12. Tài liệu tham khảo
+---
 
-- [FaceForensics++](https://github.com/ondyari/FaceForensics): Rössler và cộng sự, ICCV 2019 (gồm dữ liệu DeepFakeDetection của Google)
-- [RetinaFace](https://arxiv.org/abs/1905.00641): Deng và cộng sự, CVPR 2020; bản PyTorch [batch-face](https://github.com/elliottzheng/batch-face)
-- [U-Net](https://arxiv.org/abs/1505.04597): Ronneberger và cộng sự, MICCAI 2015
-- [DeepLabV3+](https://arxiv.org/abs/1802.02611): Chen và cộng sự, ECCV 2018
-- [SegFormer](https://arxiv.org/abs/2105.15203): Xie và cộng sự, NeurIPS 2021
-- [EfficientNet](https://arxiv.org/abs/1905.11946): Tan và Le, ICML 2019
-- [segmentation_models_pytorch](https://github.com/qubvel-org/segmentation_models.pytorch), [Hugging Face Transformers](https://github.com/huggingface/transformers)
+## 13. Tài liệu tham khảo chính
+
+1. Rössler et al., *FaceForensics++: Learning to Detect Manipulated Facial Images*, ICCV 2019.
+2. Liu et al., *Swin Transformer: Hierarchical Vision Transformer using Shifted Windows*, ICCV 2021.
+3. Xiao et al., *Unified Perceptual Parsing for Scene Understanding* (UPerNet), ECCV 2018.
+4. Tan & Le, *EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks*, ICML 2019.
+5. Nguyen et al., *Multi-task Learning for Detecting and Segmenting Manipulated Facial Images and Videos*, BTAS 2019.
+6. Li et al., *Face X-ray for More General Face Forgery Detection*, CVPR 2020.
+7. Chen et al., *Image Manipulation Detection by Multi-View Multi-Scale Supervision* (MVSS-Net), ICCV 2021.
+8. Zhou et al., *Learning Rich Features for Image Manipulation Detection* (nhánh nhiễu SRM), CVPR 2018.

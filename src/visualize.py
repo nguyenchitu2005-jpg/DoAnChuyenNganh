@@ -1,7 +1,7 @@
 """Vẽ hình so sánh mask dự đoán với mask thật, cho báo cáo và phân tích ca sai.
 
-Chạy: python src/visualize.py runs/unet_effb0/best.pt --split test --mode random
-      python src/visualize.py runs/unet_effb0/best.pt --split test --mode worst
+Chạy: python src/visualize.py runs/<tên>/best.pt --split test --mode random
+      python src/visualize.py runs/<tên>/best.pt --split test --mode worst
       (--cpu khi GPU đang bận train; --compression c40 để xem trên c40)
 Mỗi phương pháp giả một hình, mỗi hàng một ảnh: ảnh | mask thật | xác suất dự đoán |
 sai số (đúng / tô thừa / bỏ sót). Ảnh thật: ảnh | xác suất | vùng bị báo nhầm.

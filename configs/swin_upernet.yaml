@@ -1,0 +1,17 @@
+# Baseline Swin-T + UPerNet (KE_HOACH.md mục 5), FF++ c23
+name: swin_upernet
+arch: swin_upernet
+encoder: openmmlab/upernet-swin-tiny   # checkpoint ADE20K của Hugging Face
+data_root: data/faces
+index_dir: data/index
+image_size: 224
+batch_size: 16
+epochs: 30
+lr: 1.0e-4             # OneCycleLR: warmup 5% số bước rồi giảm theo cosine
+weight_decay: 0.05     # mức Swin gốc dùng
+grad_clip: 1.0
+bce_weight: 1.0        # L_seg = BCE + Dice
+dice_weight: 1.0
+threshold: 0.5         # ngưỡng pixel khi đánh giá
+seed: 0
+num_workers: 4

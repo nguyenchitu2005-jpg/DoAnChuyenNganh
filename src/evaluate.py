@@ -1,7 +1,7 @@
 """Đánh giá một checkpoint trên val, test (FF++) hoặc dfd (kiểm tra chéo).
 
-Chạy: python src/evaluate.py runs/unet_effb0/best.pt --split test
-Độ bền: python src/evaluate.py runs/unet_effb0/best.pt --split test --compression c40
+Chạy: python src/evaluate.py runs/<tên>/best.pt --split test
+Độ bền: python src/evaluate.py runs/<tên>/best.pt --split test --compression c40
 Kết quả in ra bảng theo từng phương pháp và lưu vào <thư mục run>/eval_<split>[_c40].json
 """
 import argparse
