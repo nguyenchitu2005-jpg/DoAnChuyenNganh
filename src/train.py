@@ -8,6 +8,7 @@ Dừng giữa chừng (Ctrl+C, tắt máy) rồi train tiếp từ epoch cuối 
     python src/train.py --config configs/<tên>.yaml --resume
 Giới hạn thời gian mỗi phiên (Kaggle): thêm --max-hours 11.
 Fine-tune từ mô hình khác: khoá `init: <best.pt>` trong config (chỉ nạp trọng số).
+B1 đa nhiệm: `multitask: true`, L = L_seg + bin_weight·L_bin + cls_weight·L_cls.
 Log TensorBoard: tensorboard --logdir runs
 """
 import argparse
@@ -27,7 +28,7 @@ from tqdm import tqdm
 
 from dataset import FaceSegDataset, balanced_sampler, train_transform
 from evaluate import eval_loader, run_eval
-from metrics import format_table
+from metrics import format_cls, format_table
 from models import build_model
 
 
@@ -95,7 +96,9 @@ def main():
         len(train_ds), len(sampler), len(val_loader.dataset)))
 
     device = torch.device('cuda')
-    model = build_model(cfg['arch'], cfg['encoder']).to(device)
+    multitask = cfg.get('multitask', False)
+    model = build_model(cfg['arch'], cfg['encoder'],
+                        multitask=multitask).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg['lr'],
                                   weight_decay=cfg['weight_decay'])
     steps = cfg['epochs'] * len(train_loader)
@@ -130,14 +133,19 @@ def main():
         model.train()
         t0, running = time.time(), 0.0
         bar = tqdm(train_loader, desc='epoch {}/{}'.format(epoch, cfg['epochs']))
-        for x, y, label, _ in bar:
+        for x, y, label, method in bar:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             with torch.autocast('cuda', dtype=torch.float16):
-                logits = model(x)
-            logits = logits.float()
+                out = model(x, with_cls=multitask)
+            logits = (out[0] if multitask else out).float()
             loss = (cfg['bce_weight'] * bce(logits, y)
                     + cfg['dice_weight'] * dice(logits, y))
+            if multitask:
+                # nhãn lớp = chỉ số phương pháp: 0 Real, 1-4 bốn phương pháp FF++
+                loss = loss + cfg['bin_weight'] * F.binary_cross_entropy_with_logits(
+                    out[1].float(), label.to(device).float())                     + cfg['cls_weight'] * F.cross_entropy(out[2].float(),
+                                                          method.to(device))
             real = (label == 0).to(device)   # ảnh SBI có nhãn 1 nên không tính
             if topk_weight and real.any():
                 # BCE trung bình mọi pixel gần như không phạt một mảng nhỏ tô nhầm trên mặt
@@ -168,9 +176,14 @@ def main():
                 writer.add_scalar('val/' + k, fake[k], epoch)
         if 'false_alarm' in real:
             writer.add_scalar('val/false_alarm', real['false_alarm'], epoch)
+        for k, v in summary.get('cls', {}).get('frame', {}).items():
+            if k in ('bin_acc', 'bin_auc', 'cls_acc', 'cls_f1_macro'):
+                writer.add_scalar('val/' + k, v, epoch)
         print('epoch {} done in {:.0f} min, loss {:.4f}'.format(
             epoch, (time.time() - t0) / 60, running))
         print(format_table(summary))
+        if 'cls' in summary:
+            print(format_cls(summary['cls']))
 
         # Chỉ IoU thì mô hình "tô cả khuôn mặt" cũng điểm cao (mask Face2Face,
         # NeuralTextures phủ gần cả mặt), nên chọn theo trung bình IoU ảnh giả

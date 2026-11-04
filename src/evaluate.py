@@ -13,24 +13,38 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from dataset import FaceSegDataset, eval_transform
-from metrics import SegMetrics, format_table
+from metrics import SegMetrics, cls_metrics, format_cls, format_table
 from models import build_model
 
 
 @torch.no_grad()
 def run_eval(model, loader, device, threshold=0.5, max_batches=None,
              desc='eval'):
+    """Chỉ số segmentation theo phương pháp; mô hình đa nhiệm có thêm khoá 'cls'."""
     model.eval()
     metrics = SegMetrics(threshold=threshold)
+    multitask = getattr(model, 'multitask', False)
+    cls_out = []
     for k, (x, y, label, method) in enumerate(tqdm(loader, desc=desc,
                                                    leave=False)):
         if max_batches and k >= max_batches:
             break
         with torch.autocast(device.type, dtype=torch.float16,
                             enabled=device.type == 'cuda'):
-            logits = model(x.to(device, non_blocking=True))
+            out = model(x.to(device, non_blocking=True), with_cls=multitask)
+        logits = out[0] if multitask else out
         metrics.update(torch.sigmoid(logits.float()), y, label, method)
-    return metrics.summary()
+        if multitask:
+            cls_out.append((torch.sigmoid(out[1].float()).cpu(),
+                            torch.softmax(out[2].float(), 1).cpu(), label, method))
+    summary = metrics.summary()
+    if multitask:
+        bin_prob, cls_prob, labels, methods = (torch.cat(t).numpy()
+                                               for t in zip(*cls_out))
+        # loader không xáo trộn nên thứ tự ảnh trùng thứ tự dòng trong csv
+        videos = [r[3] for r in loader.dataset.rows[:len(labels)]]
+        summary['cls'] = cls_metrics(bin_prob, cls_prob, labels, methods, videos)
+    return summary
 
 
 def eval_loader(cfg, split, fraction=1.0, degrade=None):
@@ -56,7 +70,8 @@ def load_checkpoint(path, compression='c23', device=None):
                    index_dir='data/index_' + compression)
     device = device or torch.device('cuda' if torch.cuda.is_available()
                                     else 'cpu')
-    model = build_model(cfg['arch'], cfg['encoder'], pretrained=False)
+    model = build_model(cfg['arch'], cfg['encoder'], pretrained=False,
+                        multitask=cfg.get('multitask', False))
     model.load_state_dict(ckpt['model'])
     return model.to(device).eval(), cfg, ckpt, device
 
@@ -81,6 +96,8 @@ def main():
                        device, cfg['threshold'], desc=tag)
     print('{} (epoch {}) on {}:'.format(cfg['name'], ckpt['epoch'], tag))
     print(format_table(summary))
+    if 'cls' in summary:
+        print(format_cls(summary['cls']))
     out = os.path.join(os.path.dirname(args.checkpoint),
                        'eval_{}.json'.format(tag))
     with open(out, 'w', encoding='utf-8') as f:

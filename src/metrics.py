@@ -9,7 +9,7 @@ from collections import defaultdict
 
 import numpy as np
 import torch
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import confusion_matrix, f1_score, roc_auc_score
 
 from dataset import METHODS
 
@@ -105,4 +105,58 @@ def format_table(summary):
         cells = [(' ' + fmt.format(row[c])) if c in row else '{:>7}'.format('-')
                  for c, fmt in cols]
         lines.append('{:<15}'.format(m) + ''.join(cells))
+    return '\n'.join(lines)
+
+
+def cls_metrics(bin_prob, cls_prob, labels, methods, videos):
+    """Chỉ số phân loại (B1) ở mức khung hình và mức video (trung bình xác suất các
+    khung của một video). Đa lớp chỉ tính khi mọi ảnh thuộc 5 lớp FF++ (không tính
+    cho DFD)."""
+    bin_prob, cls_prob, labels, methods = map(
+        np.asarray, (bin_prob, cls_prob, labels, methods))
+    n_cls = cls_prob.shape[1]
+
+    def one(bp, cp, y, m):
+        out = {'n': len(y), 'bin_acc': float(((bp > 0.5) == y).mean())}
+        if 0 < y.sum() < len(y):
+            out['bin_auc'] = float(roc_auc_score(y, bp))
+        if m.max() < n_cls:
+            pred = cp.argmax(1)
+            out.update(
+                cls_acc=float((pred == m).mean()),
+                cls_f1_macro=float(f1_score(m, pred, labels=range(n_cls),
+                                            average='macro', zero_division=0)),
+                cls_f1=f1_score(m, pred, labels=range(n_cls), average=None,
+                                zero_division=0).tolist(),
+                confusion=confusion_matrix(m, pred, labels=range(n_cls)).tolist())
+        return out
+
+    _, first, inv = np.unique(np.asarray(videos), return_index=True,
+                              return_inverse=True)
+    count = np.bincount(inv)
+    video_bin = np.bincount(inv, bin_prob) / count
+    video_cls = np.stack([np.bincount(inv, cls_prob[:, k]) / count
+                          for k in range(n_cls)], 1)
+    return {'frame': one(bin_prob, cls_prob, labels, methods),
+            'video': one(video_bin, video_cls, labels[first], methods[first])}
+
+
+def format_cls(cls):
+    """Bảng chỉ số phân loại, kèm ma trận nhầm lẫn mức khung hình (hàng = nhãn thật)."""
+    cols = ['n', 'bin_acc', 'bin_auc', 'cls_acc', 'cls_f1_macro']
+    lines = ['{:<15}'.format('phân loại') + ''.join('{:>13}'.format(c) for c in cols)]
+    for level in ('frame', 'video'):
+        row = cls[level]
+        lines.append('{:<15}'.format(level) + ''.join(
+            '{:>13}'.format('-' if c not in row else row[c] if c == 'n'
+                            else '{:.4f}'.format(row[c])) for c in cols))
+    if 'confusion' in cls['frame']:
+        names = [m[:6] for m in METHODS[:len(cls['frame']['confusion'])]]
+        lines.append('ma trận nhầm lẫn (khung hình), F1 từng lớp:')
+        lines.append('{:<15}'.format('') + ''.join('{:>8}'.format(n) for n in names)
+                     + '{:>8}'.format('F1'))
+        for name, row, f1 in zip(METHODS, cls['frame']['confusion'],
+                                 cls['frame']['cls_f1']):
+            lines.append('{:<15}'.format(name) + ''.join('{:>8}'.format(v) for v in row)
+                         + '{:>8.3f}'.format(f1))
     return '\n'.join(lines)

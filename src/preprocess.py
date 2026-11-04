@@ -13,7 +13,9 @@ Kết quả: data/faces/<nhóm>/{frames,masks}/<video>/<chỉ số frame>.png
 Khung cắt trên frame gốc: data/faces/<nhóm>/frames/<video>/boxes.json,
     {"<chỉ số frame>.png": [x, y, cạnh]} (khung vuông của crop_box, để ghép mask về frame)
 Nhật ký từng video: data/faces/log.jsonl
-Bản c40 (test độ bền, dùng chung mask): python src/preprocess.py --compression c40 --out data/faces_c40
+Bản c40 (test độ bền, dùng chung mask), cắt đúng frame và khung của bản c23 để hai bản
+chỉ khác nhau ở mức nén:
+    python src/preprocess.py --compression c40 --out data/faces_c40 --boxes-from data/faces
 """
 import argparse
 import glob
@@ -48,8 +50,9 @@ def init_worker(gpu_id):
     _detector = RetinaFace(gpu_id=gpu_id, network='resnet50')
 
 
-def read_frames(video_path, mask_path, n_frames):
-    """Đọc tuần tự video (và mask) cùng lúc, giữ các frame ở chỉ số cách đều."""
+def read_frames(video_path, mask_path, n_frames, wanted=None):
+    """Đọc tuần tự video (và mask) cùng lúc, giữ các frame ở chỉ số cách đều
+    (hoặc đúng các chỉ số trong `wanted`)."""
     cap = cv2.VideoCapture(video_path)
     mcap = cv2.VideoCapture(mask_path) if mask_path else None
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -58,7 +61,8 @@ def read_frames(video_path, mask_path, n_frames):
         # 118 video DFD có mask ngắn hơn video (mask khớp từ frame đầu), nên chỉ
         # lấy frame trong đoạn có mask
         usable = min(total, int(mcap.get(cv2.CAP_PROP_FRAME_COUNT)))
-    wanted = set(np.linspace(0, max(usable - 1, 0), n_frames).round().astype(int))
+    if wanted is None:
+        wanted = set(np.linspace(0, max(usable - 1, 0), n_frames).round().astype(int))
     frames, masks, idx = [], [], []
     for i in range(max(wanted) + 1):
         if not cap.grab() or (mcap is not None and not mcap.grab()):
@@ -116,7 +120,12 @@ def crop_box(box, scale):
 
 def square_crop(img, box, scale, size, interp):
     """Cắt khung `crop_box`; phần ra ngoài ảnh tô đen."""
-    l, t, side = crop_box(box, scale)
+    return cut_square(img, crop_box(box, scale), size, interp)
+
+
+def cut_square(img, square, size, interp):
+    """Cắt khung vuông (x, y, cạnh) rồi resize về size × size; phần ra ngoài ảnh tô đen."""
+    l, t, side = square
     h, w = img.shape[:2]
     pad = max(0, -l, -t, l + side - w, t + side - h)
     if pad:
@@ -128,12 +137,24 @@ def square_crop(img, box, scale, size, interp):
 
 
 def process_video(task):
-    group, video_path, mask_path, out_root, n_frames, scale, size = task
+    group, video_path, mask_path, out_root, n_frames, scale, size, boxes_from = task
     video = os.path.splitext(os.path.basename(video_path))[0]
     if '%' in video:   # chuỗi ảnh (thư mục/%08d.png): tên video là tên thư mục
         video = os.path.basename(os.path.dirname(video_path))
-    frames, masks, idx, total = read_frames(video_path, mask_path, n_frames)
-    all_boxes = detect_faces(frames) if frames else []
+    ref = None
+    if boxes_from:   # dùng lại đúng frame và khung cắt của bản đã xử lý (c23)
+        ref_path = os.path.join(boxes_from, group, 'frames', video, 'boxes.json')
+        ref = {}
+        if os.path.isfile(ref_path):
+            with open(ref_path, encoding='utf-8') as fp:
+                ref = json.load(fp)
+        wanted = {int(name[:-4]) for name in ref}
+        frames, masks, idx, total = read_frames(video_path, mask_path, n_frames, wanted) \
+            if wanted else ([], [], [], 0)
+        all_boxes = [None] * len(frames)
+    else:
+        frames, masks, idx, total = read_frames(video_path, mask_path, n_frames)
+        all_boxes = detect_faces(frames) if frames else []
     frame_dir = os.path.join(out_root, group, 'frames', video)
     mask_dir = os.path.join(out_root, group, 'masks', video)
     os.makedirs(frame_dir, exist_ok=True)
@@ -144,16 +165,20 @@ def process_video(task):
     for f, m, i, boxes in zip(frames, masks, idx, all_boxes):
         binary = (m.max(axis=2) > MASK_THRESHOLD).astype(np.uint8) \
             if mask_path else None
-        box = pick_face(boxes, binary)
-        if box is None:
-            continue
         name = '{:04d}.png'.format(i)
-        crops[name] = crop_box(box, scale)
+        if ref is not None:
+            square = ref[name]
+        else:
+            box = pick_face(boxes, binary)
+            if box is None:
+                continue
+            square = crop_box(box, scale)
+        crops[name] = square
         cv2.imwrite(os.path.join(frame_dir, name),
-                    square_crop(f, box, scale, size, None),
+                    cut_square(f, square, size, None),
                     [cv2.IMWRITE_PNG_COMPRESSION, 3])
         if mask_path:
-            crop = square_crop(binary * 255, box, scale, size, cv2.INTER_NEAREST)
+            crop = cut_square(binary * 255, square, size, cv2.INTER_NEAREST)
             empty_mask += not crop.any()
             cv2.imwrite(os.path.join(mask_dir, name), crop)
         saved += 1
@@ -176,6 +201,9 @@ def main():
                         help='Số tiến trình, mỗi tiến trình một RetinaFace trên GPU.')
     parser.add_argument('--limit', type=int, default=None,
                         help='Chỉ xử lý N video mỗi nhóm (để chạy thử).')
+    parser.add_argument('--boxes-from', dest='boxes_from',
+                        help='Thư mục đã xử lý (vd data/faces): lấy đúng frame và khung cắt '
+                             'trong boxes.json của nó thay vì phát hiện mặt lại.')
     args = parser.parse_args()
     os.makedirs(args.out, exist_ok=True)
     log_path = os.path.join(args.out, 'log.jsonl')
@@ -201,10 +229,12 @@ def main():
                 print('no mask video, skipped:', v)
                 continue
             tasks.append((group, v, mask, args.out, args.frames, args.scale,
-                          args.size))
+                          args.size, args.boxes_from))
     print('{} videos to process ({} already done)'.format(len(tasks), len(done)))
 
-    with mp.Pool(args.workers, initializer=init_worker, initargs=(0,)) as pool, \
+    # dùng khung có sẵn thì không cần nạp RetinaFace
+    init = (None, ()) if args.boxes_from else (init_worker, (0,))
+    with mp.Pool(args.workers, initializer=init[0], initargs=init[1]) as pool, \
             open(log_path, 'a', encoding='utf-8') as log:
         no_face = 0
         bar = tqdm(pool.imap_unordered(process_video, tasks), total=len(tasks))
