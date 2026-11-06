@@ -10,6 +10,7 @@ Giới hạn thời gian mỗi phiên (Kaggle): thêm --max-hours 11.
 Fine-tune từ mô hình khác: khoá `init: <best.pt>` trong config (chỉ nạp trọng số).
 B1 đa nhiệm: `multitask: true`, L = L_seg + bin_weight·L_bin + cls_weight·L_cls.
 B2 nhánh CNN: thêm `cnn_branch: efficientnet_b4`.
+B3 nhánh biên: `edge_weight: 1.0` (λ3), `edge_kernel: 5`.
 Train trộn c23 + c40: `mix_c40: true` (đọc thêm <data_root>_c40, <index_dir>_c40; val cũng trộn).
 Log TensorBoard: tensorboard --logdir runs
 """
@@ -101,8 +102,9 @@ def main():
 
     device = torch.device('cuda')
     multitask = cfg.get('multitask', False)
-    model = build_model(cfg['arch'], cfg['encoder'],
-                        multitask=multitask, cnn_branch=cfg.get('cnn_branch')).to(device)
+    edge_weight = cfg.get('edge_weight', 0.0)
+    model = build_model(cfg['arch'], cfg['encoder'], multitask=multitask,
+                        cnn_branch=cfg.get('cnn_branch'), edge_head=edge_weight > 0).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg['lr'],
                                   weight_decay=cfg['weight_decay'])
     steps = cfg['epochs'] * len(train_loader)
@@ -141,15 +143,25 @@ def main():
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
             with torch.autocast('cuda', dtype=torch.float16):
-                out = model(x, with_cls=multitask)
-            logits = (out[0] if multitask else out).float()
+                out = model(x, with_cls=multitask, with_edge=edge_weight > 0)
+            out = out if isinstance(out, tuple) else (out,)
+            logits = out[0].float()
             loss = (cfg['bce_weight'] * bce(logits, y)
                     + cfg['dice_weight'] * dice(logits, y))
             if multitask:
                 # nhãn lớp = chỉ số phương pháp: 0 Real, 1-4 bốn phương pháp FF++
-                loss = loss + cfg['bin_weight'] * F.binary_cross_entropy_with_logits(
-                    out[1].float(), label.to(device).float())                     + cfg['cls_weight'] * F.cross_entropy(out[2].float(),
-                                                          method.to(device))
+                loss = (loss + cfg['bin_weight'] * F.binary_cross_entropy_with_logits(
+                            out[1].float(), label.to(device).float())
+                        + cfg['cls_weight'] * F.cross_entropy(out[2].float(),
+                                                              method.to(device)))
+            if edge_weight:
+                # nhãn biên = dilate(mask) - erode(mask); pixel biên chỉ vài %, nên BCE có
+                # trọng số pos_weight = số pixel nền / số pixel biên của batch
+                k = cfg.get('edge_kernel', 5)
+                edge = F.max_pool2d(y, k, 1, k // 2) + F.max_pool2d(-y, k, 1, k // 2)
+                pos = edge.sum().clamp(min=1)
+                loss = loss + edge_weight * F.binary_cross_entropy_with_logits(
+                    out[-1].float(), edge, pos_weight=(edge.numel() - pos) / pos)
             real = (label == 0).to(device)   # ảnh SBI có nhãn 1 nên không tính
             if topk_weight and real.any():
                 # BCE trung bình mọi pixel gần như không phạt một mảng nhỏ tô nhầm trên mặt

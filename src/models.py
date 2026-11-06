@@ -1,6 +1,8 @@
 """Kiến trúc segmentation; trả về logits (N,1,H,W). Baseline Swin-T + UPerNet: KE_HOACH.md mục 5.
 B1 (đa nhiệm, mục 6): thêm đầu nhị phân và đầu 5 lớp, gọi model(x, with_cls=True).
-B2 (nhánh CNN, mục 6): EfficientNet chạy song song, hợp nhất với Swin ở 4 tỉ lệ."""
+B2 (nhánh CNN, mục 6): EfficientNet chạy song song, hợp nhất với Swin ở 4 tỉ lệ.
+B3 (nhánh biên, mục 6): đầu dự đoán biên vùng giả trên đặc trưng 1/4 của decoder,
+gọi model(x, with_edge=True); logits biên đứng cuối bộ kết quả."""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,10 +30,12 @@ class SwinUperNet(nn.Module):
     decoder); đầu phân lớp 150 lớp thay bằng 1 kênh. Logits đã phóng về kích thước ảnh vào.
     `multitask`: Global Average Pooling đặc trưng 1/32 rồi gắn đầu nhị phân (1 nút) và
     đầu đa lớp (5 nút). `cnn_branch`: tên mô hình timm (efficientnet_b4) lấy đặc trưng
-    1/4, 1/8, 1/16, 1/32 để hợp nhất với Swin trước khi vào UPerNet."""
+    1/4, 1/8, 1/16, 1/32 để hợp nhất với Swin trước khi vào UPerNet. `edge_head`: đầu
+    dự đoán biên (Conv 3×3 → BN → ReLU → Conv 1×1) trên đầu ra fpn_bottleneck của
+    UPerNet (512 kênh, 1/4), ngay trước lớp phân lớp mask."""
 
     def __init__(self, name='openmmlab/upernet-swin-tiny', pretrained=True,
-                 multitask=False, cnn_branch=None):
+                 multitask=False, cnn_branch=None, edge_head=False):
         super().__init__()
         from transformers import UperNetConfig, UperNetForSemanticSegmentation
         # bỏ đầu phụ (auxiliary head) của ADE20K: kế hoạch chỉ dùng L_seg trên đầu chính
@@ -54,21 +58,37 @@ class SwinUperNet(nn.Module):
         if multitask:
             self.bin_head = nn.Linear(swin_channels[-1], 1)
             self.cls_head = nn.Linear(swin_channels[-1], N_CLASSES)
+        self.edge_head = None
+        if edge_head:
+            ch = self.net.decode_head.channels
+            self.edge_head = nn.Sequential(
+                nn.Conv2d(ch, 64, 3, padding=1, bias=False), nn.BatchNorm2d(64),
+                nn.ReLU(inplace=True), nn.Conv2d(64, 1, 1))
 
-    def forward(self, x, with_cls=False):
+    def forward(self, x, with_cls=False, with_edge=False):
         # như UperNetForSemanticSegmentation.forward, giữ lại đặc trưng encoder cho 2 đầu
         feats = self.net.backbone.forward_with_filtered_kwargs(x).feature_maps
         if self.cnn is not None:
             feats = [f(s, c) for f, s, c in zip(self.fuse, feats, self.cnn(x))]
+        dec = {}
+        if with_edge:   # lấy đặc trưng 1/4 của decoder mà không phải viết lại UperNetHead
+            hook = self.net.decode_head.fpn_bottleneck.register_forward_hook(
+                lambda module, inp, out: dec.update(feat=out))
         seg = F.interpolate(self.net.decode_head(feats), size=x.shape[2:],
                             mode='bilinear', align_corners=False)
-        if not with_cls:
-            return seg
-        pooled = feats[-1].mean((2, 3))
-        return seg, self.bin_head(pooled)[:, 0], self.cls_head(pooled)
+        out = [seg]
+        if with_cls:
+            pooled = feats[-1].mean((2, 3))
+            out += [self.bin_head(pooled)[:, 0], self.cls_head(pooled)]
+        if with_edge:
+            hook.remove()
+            out.append(F.interpolate(self.edge_head(dec['feat']), size=x.shape[2:],
+                                     mode='bilinear', align_corners=False))
+        return out[0] if len(out) == 1 else tuple(out)
 
 
-def build_model(arch, encoder=None, pretrained=True, multitask=False, cnn_branch=None):
+def build_model(arch, encoder=None, pretrained=True, multitask=False, cnn_branch=None,
+                edge_head=False):
     if arch == 'swin_upernet':
-        return SwinUperNet(encoder, pretrained, multitask, cnn_branch)
+        return SwinUperNet(encoder, pretrained, multitask, cnn_branch, edge_head)
     raise ValueError('unknown arch: ' + arch)
