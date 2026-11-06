@@ -105,27 +105,48 @@ def _to_tensor(normalize):
     return ([A.Normalize(MEAN, STD)] if normalize else []) + [ToTensorV2()]
 
 
+def split_sources(cfg, split):
+    """Các cặp (csv, thư mục ảnh) của một tập. `mix_c40: true` thêm bản c40 của cùng các
+    video (index_dir + '_c40', data_root + '_c40') để train trộn c23 + c40."""
+    sources = [(os.path.join(cfg['index_dir'], split + '.csv'), cfg['data_root'])]
+    if cfg.get('mix_c40'):
+        sources.append((os.path.join(cfg['index_dir'] + '_c40', split + '.csv'),
+                        cfg['data_root'] + '_c40'))
+    return sources
+
+
 class FaceSegDataset(Dataset):
     """Mỗi mẫu: ảnh (3,H,W), mask (1,H,W) 0/1, nhãn thật/giả, chỉ số phương pháp.
 
     Frame thật không có file mask: dùng mask đen toàn bộ.
+    `csv_path` là một file csv (ảnh trong `root`), hoặc danh sách (csv, thư mục ảnh) của
+    `split_sources` để gộp nhiều nguồn; video của nguồn thứ hai trở đi được gắn mức nén
+    ('c40:Deepfakes/000_003') để không gộp nhầm với video cùng tên của c23.
     `fraction` < 1 lấy ngẫu nhiên một phần video (giữ trọn các frame của video).
     `sbi_prob` > 0 (chỉ dùng khi train): mỗi lần đọc một frame thật, với xác suất này
     biến nó thành ảnh giả tự ghép (`self_blend`), nhãn giả, phương pháp 'SBI'.
     """
 
     def __init__(self, csv_path, root, transform, fraction=1.0, seed=0, sbi_prob=0.0):
-        with open(csv_path, newline='', encoding='utf-8') as f:
-            rows = [(r['frame'], r['mask'], METHODS.index(r['method']),
-                     r['method'] + '/' + r['video'], int(r['label']))
-                    for r in csv.DictReader(f)]
+        sources = csv_path if isinstance(csv_path, list) else [(csv_path, root)]
+        rows, src = [], []
+        for k, (path, _) in enumerate(sources):
+            with open(path, newline='', encoding='utf-8') as f:
+                for r in csv.DictReader(f):
+                    tag = r['compression'] + ':' if k else ''
+                    rows.append((r['frame'], r['mask'], METHODS.index(r['method']),
+                                 tag + r['method'] + '/' + r['video'], int(r['label'])))
+                    src.append(k)
         if fraction < 1:
             videos = sorted({r[3] for r in rows})
             keep = set(random.Random(seed).sample(
                 videos, max(1, round(len(videos) * fraction))))
+            src = [k for r, k in zip(rows, src) if r[3] in keep]
             rows = [r for r in rows if r[3] in keep]
         self.rows = rows
-        self.root = root
+        self.src = src                       # chỉ số nguồn của từng dòng
+        self.roots = [r for _, r in sources]
+        self.root = self.roots[0]
         self.transform = transform
         self.sbi_prob = sbi_prob
 
@@ -137,10 +158,11 @@ class FaceSegDataset(Dataset):
 
     def __getitem__(self, i):
         frame, mask_path, method, _, label = self.rows[i]
-        image = cv2.imread(os.path.join(self.root, frame), cv2.IMREAD_COLOR)
+        root = self.roots[self.src[i]]
+        image = cv2.imread(os.path.join(root, frame), cv2.IMREAD_COLOR)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         if label:
-            mask = cv2.imread(os.path.join(self.root, mask_path),
+            mask = cv2.imread(os.path.join(root, mask_path),
                               cv2.IMREAD_GRAYSCALE)
             mask = (mask > MASK_THRESHOLD).astype(np.uint8)
         elif np.random.rand() < self.sbi_prob:

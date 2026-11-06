@@ -40,7 +40,7 @@
 - **Mô hình:**
   - `transformers` (Hugging Face): `UperNetForSemanticSegmentation`, checkpoint `openmmlab/upernet-swin-tiny`
   - hoặc `mmsegmentation` (cấu hình UPerNet + Swin-T có sẵn)
-  - `timm`: EfficientNet-B0 (cho nhánh CNN ở giai đoạn sau)
+  - `timm`: EfficientNet-B4 (cho nhánh CNN ở giai đoạn sau)
   - `segmentation_models_pytorch`: dùng cho thí nghiệm so sánh decoder
 - **Xử lý ảnh, video:** OpenCV, `albumentations`
 - **Phát hiện mặt:** RetinaFace (`insightface` hoặc `retinaface`) hoặc MTCNN (`facenet-pytorch`)
@@ -168,14 +168,16 @@ Nguyên tắc: **mỗi lần chỉ thêm một thành phần**, giữ nguyên c�
   ```
 - **Đánh giá thêm:** Accuracy, AUC (nhị phân); F1 từng lớp, ma trận nhầm lẫn (đa lớp).
 
-### B2. Thêm nhánh CNN (EfficientNet-B0)
+### B2. Thêm nhánh CNN (EfficientNet-B4)
 - **Mục đích:** bù đắp chi tiết cấp thấp (viền ghép, kết cấu da) mà Swin làm mờ do chia patch 4×4.
+- **Chọn B4 thay vì B0:** B0 (3,6 M tham số) quá nhỏ so với Swin-T; B4 (16,7 M) mạnh hơn cả Xception (mô hình chuẩn của FF++) với chi phí tương đương, và được dùng nhiều trong phát hiện deepfake. Đổi lại thời gian train tăng khoảng 30%.
 - **Cách làm:**
-  - EfficientNet-B0 (`timm`, `features_only=True`) chạy song song với Swin-T, lấy đặc trưng ở 4 tỉ lệ:
-    - B0: 24, 40, 112, 320 kênh
+  - EfficientNet-B4 (`timm`, `features_only=True`, trọng số ImageNet) chạy song song với Swin-T, lấy đặc trưng ở 4 tỉ lệ:
+    - B4: 32, 56, 160, 448 kênh
     - Swin-T: 96, 192, 384, 768 kênh
-  - Ở mỗi tỉ lệ: nối (concat) → Conv 1×1 → BatchNorm → ReLU, đưa về số kênh của Swin.
+  - Ở mỗi tỉ lệ: nối (concat) → Conv 1×1 → BatchNorm → ReLU, đưa về số kênh của Swin, rồi **cộng** vào đặc trưng Swin. gamma của BatchNorm khởi tạo 0 nên lúc đầu mô hình chạy y như B1, decoder UPerNet đã huấn luyện sẵn không bị phá.
   - Đặc trưng hợp nhất đưa vào UPerNet như cũ.
+- **Thí nghiệm bổ sung (nếu còn quota):** so sánh loại nhánh CNN (EfficientNet-B0, Xception, ResNet-18) với mọi thiết lập khác giữ nguyên.
 - **Mở rộng (tùy chọn):** thay concat bằng cross-attention giữa hai nhánh.
 
 ### B3. Thêm nhánh dự đoán biên
@@ -210,7 +212,7 @@ Nguyên tắc: **mỗi lần chỉ thêm một thành phần**, giữ nguyên c�
 
 | Mô hình | IoU | Dice | Pixel-AUC | Số tham số | Thời gian/ảnh |
 |---|---|---|---|---|---|
-| Baseline: Swin-T + UPerNet | | | | | |
+| Baseline: Swin-T + UPerNet | 0,901 | 0,923 | 0,996 | 58,9 M | 29 ms (RTX 3050, batch 1, fp16) |
 | + B1 (đa nhiệm) | | | | | |
 | + B1 + B2 (nhánh CNN) | | | | | |
 | + B1 + B2 + B3 (nhánh biên) | | | | | |

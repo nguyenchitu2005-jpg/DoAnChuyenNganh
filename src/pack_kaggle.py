@@ -1,9 +1,12 @@
 """Đóng gói ảnh mặt đã cắt + file index thành một file zip để tải lên Kaggle Dataset.
 
-Chạy: python src/pack_kaggle.py
-Mặc định lấy train, val, test (FF++ c23, ảnh 224: khoảng 10 GB); DFD và c40 đánh giá ở máy nhà.
-Kết quả: data/kaggle/ffpp_faces_c23.zip (bên trong: faces/..., index/<split>.csv)
-và data/kaggle/dataset-metadata.json để tải lên bằng `kaggle datasets create`.
+Chạy: python src/pack_kaggle.py --user <tài khoản>
+Mặc định lấy train, val, test (FF++ c23, ảnh 224: khoảng 10 GB); DFD đánh giá ở máy nhà.
+Bản c40 (để train trộn c23 + c40):
+    python src/pack_kaggle.py --user <tài khoản> --root data/faces_c40 --index data/index_c40
+        --slug ffpp-faces-c40 --out data/kaggle_c40
+Kết quả: <out>/<slug>.zip, vd data/kaggle/ffpp_faces_c23.zip (bên trong: faces/..., index/<split>.csv)
+và <out>/dataset-metadata.json để tải lên bằng `kaggle datasets create`.
 PNG đã nén sẵn nên zip chỉ lưu (không nén lại), đóng gói nhanh hơn.
 """
 import argparse
@@ -37,7 +40,7 @@ def main():
                     files.add(r['mask'])
 
     os.makedirs(args.out, exist_ok=True)
-    zip_path = os.path.join(args.out, 'ffpp_faces_c23.zip')
+    zip_path = os.path.join(args.out, args.slug.replace('-', '_') + '.zip')
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as z:
         for split in args.splits:
             z.write(os.path.join(args.index, split + '.csv'),
@@ -46,7 +49,7 @@ def main():
             z.write(os.path.join(args.root, rel), 'faces/' + rel)
 
     # Dataset riêng tư (mặc định của Kaggle): giấy phép FF++ không cho chia sẻ lại
-    meta = {'title': 'FF++ faces c23 (private)',
+    meta = {'title': 'FF++ faces {} (private)'.format(args.slug.split('-')[-1]),
             'id': '{}/{}'.format(args.user, args.slug),
             'licenses': [{'name': 'other'}]}
     with open(os.path.join(args.out, 'dataset-metadata.json'), 'w',

@@ -1,0 +1,23 @@
+# Như b1_multitask.yaml nhưng train trộn c23 + c40 (val cũng trộn)
+# B1: baseline + học đa nhiệm (KE_HOACH.md mục 6), FF++ c23; mọi thiết lập khác như swin_upernet.yaml
+name: b1_mix
+arch: swin_upernet
+encoder: openmmlab/upernet-swin-tiny   # checkpoint ADE20K của Hugging Face
+data_root: data/faces
+index_dir: data/index
+image_size: 224
+batch_size: 16
+epochs: 30
+lr: 1.0e-4             # OneCycleLR: warmup 5% số bước rồi giảm theo cosine
+weight_decay: 0.05     # mức Swin gốc dùng
+grad_clip: 1.0
+bce_weight: 1.0        # L_seg = BCE + Dice
+dice_weight: 1.0
+threshold: 0.5         # ngưỡng pixel khi đánh giá
+seed: 0
+num_workers: 4
+multitask: true        # thêm đầu nhị phân + đầu 5 lớp trên đặc trưng 1/32 của Swin
+bin_weight: 0.5        # λ1
+cls_weight: 0.5        # λ2
+mix_c40: true          # thêm ảnh c40 của cùng các video
+samples_per_epoch: 115123   # = số frame train c23: epoch dài như bản chỉ c23

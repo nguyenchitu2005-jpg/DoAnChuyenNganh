@@ -9,6 +9,8 @@ Dừng giữa chừng (Ctrl+C, tắt máy) rồi train tiếp từ epoch cuối 
 Giới hạn thời gian mỗi phiên (Kaggle): thêm --max-hours 11.
 Fine-tune từ mô hình khác: khoá `init: <best.pt>` trong config (chỉ nạp trọng số).
 B1 đa nhiệm: `multitask: true`, L = L_seg + bin_weight·L_bin + cls_weight·L_cls.
+B2 nhánh CNN: thêm `cnn_branch: efficientnet_b4`.
+Train trộn c23 + c40: `mix_c40: true` (đọc thêm <data_root>_c40, <index_dir>_c40; val cũng trộn).
 Log TensorBoard: tensorboard --logdir runs
 """
 import argparse
@@ -26,7 +28,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from dataset import FaceSegDataset, balanced_sampler, train_transform
+from dataset import FaceSegDataset, balanced_sampler, split_sources, train_transform
 from evaluate import eval_loader, run_eval
 from metrics import format_cls, format_table
 from models import build_model
@@ -80,12 +82,14 @@ def main():
     with open(os.path.join(run_dir, 'config.yaml'), 'w', encoding='utf-8') as f:
         yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
 
-    train_ds = FaceSegDataset(os.path.join(cfg['index_dir'], 'train.csv'),
-                              cfg['data_root'],
+    train_ds = FaceSegDataset(split_sources(cfg, 'train'), None,
                               train_transform(cfg['image_size']),
                               fraction=cfg['fraction'], seed=cfg['seed'],
                               sbi_prob=cfg.get('sbi_prob', 0.0))
-    sampler = balanced_sampler(train_ds, cfg.get('samples_per_epoch'),
+    per_epoch = cfg.get('samples_per_epoch')
+    if per_epoch:   # chạy thử với --fraction thì epoch cũng ngắn theo
+        per_epoch = max(1, round(per_epoch * cfg['fraction']))
+    sampler = balanced_sampler(train_ds, per_epoch,
                                seed=cfg['seed'])
     train_loader = DataLoader(train_ds, batch_size=cfg['batch_size'],
                               sampler=sampler, num_workers=cfg['num_workers'],
@@ -98,7 +102,7 @@ def main():
     device = torch.device('cuda')
     multitask = cfg.get('multitask', False)
     model = build_model(cfg['arch'], cfg['encoder'],
-                        multitask=multitask).to(device)
+                        multitask=multitask, cnn_branch=cfg.get('cnn_branch')).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg['lr'],
                                   weight_decay=cfg['weight_decay'])
     steps = cfg['epochs'] * len(train_loader)
