@@ -70,7 +70,8 @@ class SwinUperNet(nn.Module):
     nhánh SRMBranch, hợp nhất với đặc trưng 1/4 và 1/8 (sau nhánh CNN nếu có)."""
 
     def __init__(self, name='openmmlab/upernet-swin-tiny', pretrained=True,
-                 multitask=False, cnn_branch=None, edge_head=False, freq_branch=None):
+                 multitask=False, cnn_branch=None, edge_head=False, freq_branch=None,
+                 cls_pool='gap'):
         super().__init__()
         from transformers import UperNetConfig, UperNetForSemanticSegmentation
         # bỏ đầu phụ (auxiliary head) của ADE20K: kế hoạch chỉ dùng L_seg trên đầu chính
@@ -96,9 +97,15 @@ class SwinUperNet(nn.Module):
             self.freq_fuse = nn.ModuleList(Fuse(s, c) for s, c in zip(
                 swin_channels[:2], SRMBranch.channels))
         self.multitask = multitask
+        assert cls_pool in ('gap', 'mask'), cls_pool
+        self.cls_pool = cls_pool
         if multitask:
-            self.bin_head = nn.Linear(swin_channels[-1], 1)
-            self.cls_head = nn.Linear(swin_channels[-1], N_CLASSES)
+            # 'mask' (C1): đặc trưng 1/8, 1/16, 1/32, mỗi tầng gom 2 cách (trung bình cả ảnh và
+            # trung bình theo mask dự đoán), để vùng giả nhỏ như miệng không bị pha loãng
+            dim = swin_channels[-1] if cls_pool == 'gap' else 2 * sum(swin_channels[1:])
+            self.cls_norm = nn.LayerNorm(dim) if cls_pool == 'mask' else nn.Identity()
+            self.bin_head = nn.Linear(dim, 1)
+            self.cls_head = nn.Linear(dim, N_CLASSES)
         self.edge_head = None
         if edge_head:
             ch = self.net.decode_head.channels
@@ -121,8 +128,17 @@ class SwinUperNet(nn.Module):
                             mode='bilinear', align_corners=False)
         out = [seg]
         if with_cls:
-            pooled = feats[-1].mean((2, 3))
-            out += [self.bin_head(pooled)[:, 0], self.cls_head(pooled)]
+            if self.cls_pool == 'gap':
+                pooled = feats[-1].mean((2, 3))
+            else:   # detach: loss phân loại không kéo lệch phần tô vùng
+                m = torch.sigmoid(seg.detach().float())
+                parts = []
+                for f in feats[1:]:
+                    f = f.float()
+                    w = F.adaptive_avg_pool2d(m, f.shape[2:])
+                    parts += [f.mean((2, 3)), (f * w).sum((2, 3)) / (w.sum((2, 3)) + 1e-4)]
+                pooled = self.cls_norm(torch.cat(parts, 1))
+            out +=[self.bin_head(pooled)[:, 0], self.cls_head(pooled)]
         if with_edge:
             hook.remove()
             out.append(F.interpolate(self.edge_head(dec['feat']), size=x.shape[2:],
@@ -131,7 +147,8 @@ class SwinUperNet(nn.Module):
 
 
 def build_model(arch, encoder=None, pretrained=True, multitask=False, cnn_branch=None,
-                edge_head=False, freq_branch=None):
+                edge_head=False, freq_branch=None, cls_pool='gap'):
     if arch == 'swin_upernet':
-        return SwinUperNet(encoder, pretrained, multitask, cnn_branch, edge_head, freq_branch)
+        return SwinUperNet(encoder, pretrained, multitask, cnn_branch, edge_head, freq_branch,
+                           cls_pool)
     raise ValueError('unknown arch: ' + arch)

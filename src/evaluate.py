@@ -78,7 +78,8 @@ def load_checkpoint(path, compression='c23', device=None):
                         multitask=cfg.get('multitask', False),
                         cnn_branch=cfg.get('cnn_branch'),
                         edge_head=cfg.get('edge_weight', 0) > 0,
-                        freq_branch=cfg.get('freq_branch'))
+                        freq_branch=cfg.get('freq_branch'),
+                        cls_pool=cfg.get('cls_pool', 'gap'))
     model.load_state_dict(ckpt['model'])
     return model.to(device).eval(), cfg, ckpt, device
 

@@ -1,0 +1,25 @@
+# C1: ưu tiên phân loại thật/giả. Như b1_mix.yaml, đổi 3 điểm: đầu phân loại gom đặc trưng
+# 1/8, 1/16, 1/32 theo mask dự đoán, trọng số loss phân loại 1.0, chọn checkpoint theo phân loại
+name: c1_mix
+arch: swin_upernet
+encoder: openmmlab/upernet-swin-tiny   # checkpoint ADE20K của Hugging Face
+data_root: data/faces
+index_dir: data/index
+image_size: 224
+batch_size: 16
+epochs: 30
+lr: 1.0e-4             # OneCycleLR: warmup 5% số bước rồi giảm theo cosine
+weight_decay: 0.05     # mức Swin gốc dùng
+grad_clip: 1.0
+bce_weight: 1.0        # L_seg = BCE + Dice
+dice_weight: 1.0
+threshold: 0.5         # ngưỡng pixel khi đánh giá
+seed: 0
+num_workers: 4
+multitask: true        # thêm đầu nhị phân + đầu 5 lớp trên đặc trưng 1/32 của Swin
+bin_weight: 1.0        # λ1 (B1: 0.5)
+cls_weight: 1.0        # λ2 (B1: 0.5)
+mix_c40: true          # thêm ảnh c40 của cùng các video
+samples_per_epoch: 115123   # = số frame train c23: epoch dài như bản chỉ c23
+cls_pool: mask         # đầu phân loại mới (models.py)
+select_by: cls         # best.pt = accuracy cân bằng thật/giả trên val cao nhất
