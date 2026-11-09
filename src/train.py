@@ -10,7 +10,7 @@ Giới hạn thời gian mỗi phiên (Kaggle): thêm --max-hours 11.
 Fine-tune từ mô hình khác: khoá `init: <best.pt>` trong config (chỉ nạp trọng số).
 B1 đa nhiệm: `multitask: true`, L = L_seg + bin_weight·L_bin + cls_weight·L_cls.
 B2 nhánh CNN: thêm `cnn_branch: efficientnet_b4`.
-B3 nhánh biên: `edge_weight: 1.0` (λ3), `edge_kernel: 5`.
+B3 nhánh biên: `edge_weight: 1.0` (λ3), `edge_kernel: 5`. B4 nhánh tần số: `freq_branch: srm`.
 Train trộn c23 + c40: `mix_c40: true` (đọc thêm <data_root>_c40, <index_dir>_c40; val cũng trộn).
 Log TensorBoard: tensorboard --logdir runs
 """
@@ -104,7 +104,8 @@ def main():
     multitask = cfg.get('multitask', False)
     edge_weight = cfg.get('edge_weight', 0.0)
     model = build_model(cfg['arch'], cfg['encoder'], multitask=multitask,
-                        cnn_branch=cfg.get('cnn_branch'), edge_head=edge_weight > 0).to(device)
+                        cnn_branch=cfg.get('cnn_branch'), edge_head=edge_weight > 0,
+                        freq_branch=cfg.get('freq_branch')).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg['lr'],
                                   weight_decay=cfg['weight_decay'])
     steps = cfg['epochs'] * len(train_loader)

@@ -117,7 +117,13 @@ def cls_metrics(bin_prob, cls_prob, labels, methods, videos):
     n_cls = cls_prob.shape[1]
 
     def one(bp, cp, y, m):
-        out = {'n': len(y), 'bin_acc': float(((bp > 0.5) == y).mean())}
+        yp = bp > 0.5
+        tp, fp, fn = int((yp & (y == 1)).sum()), int((yp & (y == 0)).sum()), int((~yp & (y == 1)).sum())
+        # lớp dương = ảnh giả; recall ảnh thật = 1 - tỉ lệ báo nhầm ở mức ảnh
+        out = {'n': len(y), 'bin_acc': float((yp == y).mean()),
+               'bin_precision': tp / max(tp + fp, 1), 'bin_recall': tp / max(tp + fn, 1),
+               'bin_f1': 2 * tp / max(2 * tp + fp + fn, 1),
+               'bin_real_recall': float((~yp[y == 0]).mean()) if (y == 0).any() else None}
         if 0 < y.sum() < len(y):
             out['bin_auc'] = float(roc_auc_score(y, bp))
         if m.max() < n_cls:

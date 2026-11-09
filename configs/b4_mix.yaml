@@ -1,0 +1,26 @@
+# B4: B3 + nhánh tần số SRM (KE_HOACH.md mục 6), train trộn c23 + c40
+name: b4_mix
+arch: swin_upernet
+encoder: openmmlab/upernet-swin-tiny   # checkpoint ADE20K của Hugging Face
+data_root: data/faces
+index_dir: data/index
+image_size: 224
+batch_size: 16
+epochs: 30
+lr: 1.0e-4             # OneCycleLR: warmup 5% số bước rồi giảm theo cosine
+weight_decay: 0.05     # mức Swin gốc dùng
+grad_clip: 1.0
+bce_weight: 1.0        # L_seg = BCE + Dice
+dice_weight: 1.0
+threshold: 0.5         # ngưỡng pixel khi đánh giá
+seed: 0
+num_workers: 4
+multitask: true        # thêm đầu nhị phân + đầu 5 lớp trên đặc trưng 1/32 của Swin
+bin_weight: 0.5        # λ1
+cls_weight: 0.5        # λ2
+cnn_branch: efficientnet_b4   # timm, ImageNet; hợp nhất với Swin ở 1/4, 1/8, 1/16, 1/32
+mix_c40: true          # thêm ảnh c40 của cùng các video
+samples_per_epoch: 115123   # = số frame train c23: epoch dài như bản chỉ c23
+edge_weight: 1.0        # λ3, BCE có trọng số trên biên mask
+edge_kernel: 5          # biên = dilate - erode với kernel 5×5 (ảnh 224)
+freq_branch: srm        # 3 bộ lọc SRM cố định + CNN nhỏ, hợp nhất ở 1/4 và 1/8

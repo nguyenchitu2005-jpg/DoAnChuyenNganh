@@ -2,7 +2,8 @@
 B1 (đa nhiệm, mục 6): thêm đầu nhị phân và đầu 5 lớp, gọi model(x, with_cls=True).
 B2 (nhánh CNN, mục 6): EfficientNet chạy song song, hợp nhất với Swin ở 4 tỉ lệ.
 B3 (nhánh biên, mục 6): đầu dự đoán biên vùng giả trên đặc trưng 1/4 của decoder,
-gọi model(x, with_edge=True); logits biên đứng cuối bộ kết quả."""
+gọi model(x, with_edge=True); logits biên đứng cuối bộ kết quả.
+B4 (nhánh tần số, mục 6): bộ lọc SRM cố định + CNN nhỏ, hợp nhất với Swin ở 1/4 và 1/8."""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -25,6 +26,39 @@ class Fuse(nn.Module):
         return swin + F.relu(self.bn(self.conv(torch.cat([swin, cnn], 1))))
 
 
+# 3 bộ lọc SRM lấy nhiễu dư (Zhou và cộng sự, CVPR 2018: nhánh nhiễu của RGB-N)
+SRM_KERNELS = [
+    [[0, 0, 0, 0, 0], [0, -1, 2, -1, 0], [0, 2, -4, 2, 0], [0, -1, 2, -1, 0], [0, 0, 0, 0, 0]],
+    [[-1, 2, -2, 2, -1], [2, -6, 8, -6, 2], [-2, 8, -12, 8, -2], [2, -6, 8, -6, 2],
+     [-1, 2, -2, 2, -1]],
+    [[0, 0, 0, 0, 0], [0, 0, 0, 0, 0], [0, 1, -2, 1, 0], [0, 0, 0, 0, 0], [0, 0, 0, 0, 0]],
+]
+SRM_SCALE = [4, 12, 2]
+
+
+class SRMBranch(nn.Module):
+    """3 bộ lọc SRM cố định trên từng kênh màu → 9 kênh nhiễu tần số cao, rồi một CNN nhỏ
+    lấy đặc trưng 1/4 (64 kênh) và 1/8 (128 kênh)."""
+    channels = (64, 128)
+
+    def __init__(self):
+        super().__init__()
+        k = torch.tensor(SRM_KERNELS, dtype=torch.float32) / torch.tensor(SRM_SCALE)[:, None, None]
+        # groups=3: kênh ra 3c..3c+2 là 3 bộ lọc trên kênh màu c; hằng số nên không lưu vào checkpoint
+        self.register_buffer('srm', k.repeat(3, 1, 1)[:, None], persistent=False)
+
+        def block(cin, cout):
+            return nn.Sequential(
+                nn.Conv2d(cin, cout, 3, 2, 1, bias=False), nn.BatchNorm2d(cout), nn.ReLU(inplace=True),
+                nn.Conv2d(cout, cout, 3, 1, 1, bias=False), nn.BatchNorm2d(cout), nn.ReLU(inplace=True))
+        self.to_4 = nn.Sequential(block(9, 32), block(32, 64))
+        self.to_8 = block(64, 128)
+
+    def forward(self, x):
+        f4 = self.to_4(F.conv2d(x, self.srm.to(x.dtype), padding=2, groups=3))
+        return f4, self.to_8(f4)
+
+
 class SwinUperNet(nn.Module):
     """UPerNet + Swin-T của Hugging Face, khởi tạo từ checkpoint ADE20K (cả encoder và
     decoder); đầu phân lớp 150 lớp thay bằng 1 kênh. Logits đã phóng về kích thước ảnh vào.
@@ -32,10 +66,11 @@ class SwinUperNet(nn.Module):
     đầu đa lớp (5 nút). `cnn_branch`: tên mô hình timm (efficientnet_b4) lấy đặc trưng
     1/4, 1/8, 1/16, 1/32 để hợp nhất với Swin trước khi vào UPerNet. `edge_head`: đầu
     dự đoán biên (Conv 3×3 → BN → ReLU → Conv 1×1) trên đầu ra fpn_bottleneck của
-    UPerNet (512 kênh, 1/4), ngay trước lớp phân lớp mask."""
+    UPerNet (512 kênh, 1/4), ngay trước lớp phân lớp mask. `freq_branch`: 'srm' thêm
+    nhánh SRMBranch, hợp nhất với đặc trưng 1/4 và 1/8 (sau nhánh CNN nếu có)."""
 
     def __init__(self, name='openmmlab/upernet-swin-tiny', pretrained=True,
-                 multitask=False, cnn_branch=None, edge_head=False):
+                 multitask=False, cnn_branch=None, edge_head=False, freq_branch=None):
         super().__init__()
         from transformers import UperNetConfig, UperNetForSemanticSegmentation
         # bỏ đầu phụ (auxiliary head) của ADE20K: kế hoạch chỉ dùng L_seg trên đầu chính
@@ -54,6 +89,12 @@ class SwinUperNet(nn.Module):
                                          features_only=True, out_indices=(1, 2, 3, 4))
             self.fuse = nn.ModuleList(Fuse(s, c) for s, c in zip(
                 swin_channels, self.cnn.feature_info.channels()))
+        self.freq = None
+        if freq_branch:
+            assert freq_branch == 'srm', freq_branch
+            self.freq = SRMBranch()
+            self.freq_fuse = nn.ModuleList(Fuse(s, c) for s, c in zip(
+                swin_channels[:2], SRMBranch.channels))
         self.multitask = multitask
         if multitask:
             self.bin_head = nn.Linear(swin_channels[-1], 1)
@@ -70,6 +111,8 @@ class SwinUperNet(nn.Module):
         feats = self.net.backbone.forward_with_filtered_kwargs(x).feature_maps
         if self.cnn is not None:
             feats = [f(s, c) for f, s, c in zip(self.fuse, feats, self.cnn(x))]
+        if self.freq is not None:
+            feats = [f(s, c) for f, s, c in zip(self.freq_fuse, feats, self.freq(x))]                 + list(feats[2:])
         dec = {}
         if with_edge:   # lấy đặc trưng 1/4 của decoder mà không phải viết lại UperNetHead
             hook = self.net.decode_head.fpn_bottleneck.register_forward_hook(
@@ -88,7 +131,7 @@ class SwinUperNet(nn.Module):
 
 
 def build_model(arch, encoder=None, pretrained=True, multitask=False, cnn_branch=None,
-                edge_head=False):
+                edge_head=False, freq_branch=None):
     if arch == 'swin_upernet':
-        return SwinUperNet(encoder, pretrained, multitask, cnn_branch, edge_head)
+        return SwinUperNet(encoder, pretrained, multitask, cnn_branch, edge_head, freq_branch)
     raise ValueError('unknown arch: ' + arch)

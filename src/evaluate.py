@@ -77,7 +77,8 @@ def load_checkpoint(path, compression='c23', device=None):
     model = build_model(cfg['arch'], cfg['encoder'], pretrained=False,
                         multitask=cfg.get('multitask', False),
                         cnn_branch=cfg.get('cnn_branch'),
-                        edge_head=cfg.get('edge_weight', 0) > 0)
+                        edge_head=cfg.get('edge_weight', 0) > 0,
+                        freq_branch=cfg.get('freq_branch'))
     model.load_state_dict(ckpt['model'])
     return model.to(device).eval(), cfg, ckpt, device
 
