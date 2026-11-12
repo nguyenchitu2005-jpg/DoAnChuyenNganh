@@ -1,19 +1,21 @@
 # Python 3.12. Cài PyTorch bản CUDA trước:
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+#   pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu130
 # rồi: pip install -r requirements.txt
-torch
-torchvision
-segmentation-models-pytorch
-timm
-transformers
-opencv-python
-albumentations
-batch-face
-scikit-learn
-numpy
-tqdm
-pyyaml
-tensorboard
-gradio
-matplotlib
-scipy
+# Phiên bản ghi theo môi trường đã train/đánh giá đồ án (Windows, CUDA 13.0).
+torch==2.14.1
+torchvision==0.29.1
+segmentation-models-pytorch==0.5.0
+timm==1.0.30
+transformers==5.19.0
+opencv-python==5.0.0.93
+albumentations==2.0.8
+batch-face==1.5.4
+scikit-learn==1.9.1
+numpy==2.5.2
+pandas==3.0.6
+tqdm==4.70.1
+pyyaml==6.0.3
+tensorboard==2.21.0
+gradio==6.30.0
+matplotlib==3.11.2
+scipy==1.18.1

@@ -148,7 +148,7 @@ Mọi mô hình đều train trộn c23 và c40. Thời gian xử lý đo với 
 Cần Python 3.12 và GPU NVIDIA. Đánh giá và demo chạy được trên GPU 4 GB (RTX 3050 Laptop); train dùng GPU T4 16 GB trên Kaggle.
 
 ```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu130
 pip install -r requirements.txt
 ```
 
