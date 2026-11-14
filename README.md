@@ -154,12 +154,22 @@ pip install -r requirements.txt
 
 ## Dữ liệu
 
+**Cách nhanh: tải ảnh mặt đã cắt sẵn.** Cách này bỏ qua bước 1–3 bên dưới. Ảnh nằm trên Kaggle dưới dạng dataset riêng tư, nên bạn cần được chủ dataset chia sẻ và cần có token Kaggle (hướng dẫn ở đầu file script).
+```bash
+pip install kaggle
+python download_data.py              # c23 và c40, khoảng 20 GB
+python download_data.py --only c23   # chỉ c23, khoảng 10 GB
+```
+Bộ ảnh này không có DFD. Muốn thử chéo trên DFD thì vẫn phải tải video gốc và tự cắt mặt theo bước 1–2.
+
+**Tự tạo dữ liệu từ video gốc:**
+
 1. **Tải video FF++ và DFD.** Cần đăng ký với nhóm tác giả FF++ để được dùng script tải; bản script dùng trong đồ án là `faceforensics_download_v4.py`. [download_all.ps1](download_all.ps1) gọi script này cho mask và video, và tự chờ rồi tải tiếp khi server lỗi:
    ```powershell
    powershell -ExecutionPolicy Bypass -File download_all.ps1
    powershell -ExecutionPolicy Bypass -File download_all.ps1 -Compression c40
    ```
-   Video được lưu vào `data/FaceForensics/`, giữ cấu trúc gốc của FF++. Chia train/val/test theo split chính thức trong `data/splits/{train,val,test}.json`.
+   Video được lưu vào `data/FaceForensics/`, giữ cấu trúc gốc của FF++. Script cũng tải luôn split chính thức train/val/test của FF++ vào `data/splits/{train,val,test}.json`.
 2. **Cắt mặt và mask.** Mỗi video lấy 32 khung cách đều. Mặt được phát hiện bằng RetinaFace, nới khung 1.3 lần rồi đưa về 224×224:
    ```bash
    python src/preprocess.py                       # c23 -> data/faces
