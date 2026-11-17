@@ -1,5 +1,6 @@
 # Phương án B: B1 (b1_mix.yaml) train lại từ đầu trên FF++ + phần DFD train, mọi thiết lập khác giữ nguyên.
-# Dữ liệu: data/clips_dfd (FF++ = data/faces; DFD cắt lại 4 đoạn × 8 khung chính diện, không dải đen),
+# Dữ liệu: data/clips_dfd (FF++ = data/clips_ff: 4 đoạn × 8 khung cách đều, không lọc góc;
+# DFD cắt lại 4 đoạn × 8 khung chính diện; khung cắt dịch vào trong ảnh nên gần như không dải đen),
 # index data/index_b: train = FF++ train + DFD 14 diễn viên train (180 thật / 820 giả, đã bỏ khung xấu,
 # nghiêng ≥ 30°); val, test = FF++ như cũ; dfd = DFD 14 diễn viên test (183 / 706), dfd_all = cả DFD.
 # Video thật DFD tính là lớp Real ở đầu 5 lớp; video giả DFD không tính loss 5 lớp (train.py).

@@ -118,6 +118,8 @@ def main():
         write_csv(os.path.join(args.out, split + '.csv'), rows)
         summarize(split, rows, missing, absent)
 
+    if not os.path.isdir(os.path.join(args.root, 'manipulated_sequences', 'DeepFakeDetection')):
+        return   # thư mục chỉ có FF++ (vd data/clips_ff)
     rows, missing, absent = dfd_rows(args.root, args.compression)
     write_csv(os.path.join(args.out, 'dfd.csv'), rows)
     summarize('dfd', rows, missing, absent)
