@@ -30,15 +30,20 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from dataset import FaceSegDataset, balanced_sampler, split_sources, train_transform
+from dataset import METHODS, FaceSegDataset, balanced_sampler, split_sources, train_transform
 from evaluate import eval_loader, run_eval
 from metrics import format_cls, format_table
 from models import build_model
+
+ACTORS = METHODS.index('actors')
 
 
 def load_config(args):
     with open(args.config, encoding='utf-8') as f:
         cfg = yaml.safe_load(f)
+    # thư mục ở máy nhà, để evaluate.py tìm lại dữ liệu khi checkpoint train ở Kaggle (/tmp/faces)
+    cfg.setdefault('home_data_root', cfg['data_root'])
+    cfg.setdefault('home_index_dir', cfg['index_dir'])
     for key in ('epochs', 'batch_size', 'lr', 'name', 'data_root', 'index_dir',
                 'num_workers'):
         if getattr(args, key) is not None:
@@ -152,11 +157,17 @@ def main():
             loss = (cfg['bce_weight'] * bce(logits, y)
                     + cfg['dice_weight'] * dice(logits, y))
             if multitask:
-                # nhãn lớp = chỉ số phương pháp: 0 Real, 1-4 bốn phương pháp FF++
+                # nhãn lớp = chỉ số phương pháp: 0 Real, 1-4 bốn phương pháp FF++. Video thật DFD
+                # (actors) tính là Real; ảnh giả không thuộc 4 phương pháp (DFD, SBI) không tính
+                # loss 5 lớp, chỉ học mask và đầu thật/giả
+                n_cls = out[2].shape[1]
+                target = torch.where(method == ACTORS, 0, method).to(device)
+                target[target >= n_cls] = -100
+                ce = F.cross_entropy(out[2].float(), target, ignore_index=-100, reduction='sum') \
+                    / (target >= 0).sum().clamp(min=1)
                 loss = (loss + cfg['bin_weight'] * F.binary_cross_entropy_with_logits(
                             out[1].float(), label.to(device).float())
-                        + cfg['cls_weight'] * F.cross_entropy(out[2].float(),
-                                                              method.to(device)))
+                        + cfg['cls_weight'] * ce)
             if edge_weight:
                 # nhãn biên = dilate(mask) - erode(mask); pixel biên chỉ vài %, nên BCE có
                 # trọng số pos_weight = số pixel nền / số pixel biên của batch

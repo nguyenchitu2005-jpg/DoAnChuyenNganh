@@ -67,11 +67,11 @@ def load_checkpoint(path, compression='c23', device=None):
     cfg = dict(ckpt['cfg'], mix_c40=False)   # đánh giá từng mức nén riêng, kể cả mô hình train trộn
     if not os.path.isdir(cfg['data_root']):
         # checkpoint train ở máy khác (Kaggle): dùng dữ liệu ở máy này
-        cfg = dict(cfg, data_root='data/faces', index_dir='data/index',
-                   num_workers=6)
-    if compression != 'c23':
-        cfg = dict(cfg, data_root='data/faces_' + compression,
-                   index_dir='data/index_' + compression)
+        cfg = dict(cfg, data_root=cfg.get('home_data_root', 'data/faces'),
+                   index_dir=cfg.get('home_index_dir', 'data/index'), num_workers=6)
+    if compression != 'c23':   # vd data/faces → data/faces_c40, data/index_b → data/index_b_c40
+        cfg = dict(cfg, data_root=cfg['data_root'] + '_' + compression,
+                   index_dir=cfg['index_dir'] + '_' + compression)
     device = device or torch.device('cuda' if torch.cuda.is_available()
                                     else 'cpu')
     model = build_model(cfg['arch'], cfg['encoder'], pretrained=False,

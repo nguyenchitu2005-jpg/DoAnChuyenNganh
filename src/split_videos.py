@@ -1,6 +1,7 @@
 """Tách video FF++ thành thư mục train/val/test theo split chính thức (data/splits/*.json),
 giữ nguyên cấu trúc thư mục của FF++ bên trong mỗi split; DFD (actors + DeepFakeDetection)
-để riêng ở thư mục dfd vì chỉ dùng để thử chéo.
+để nguyên bộ ở thư mục dfd (thử chéo); thêm vào đó DFD chia theo diễn viên (14 train / 14 test,
+xem temporal.dfd_part) được bổ sung vào train và test.
 
 Chạy: python src/split_videos.py   → data/ff_split/{train,val,test,dfd}/...
 Dùng hard link (cùng ổ đĩa) nên không tốn thêm dung lượng; xoá thư mục này không ảnh
@@ -47,3 +48,18 @@ for rel, sub in [('original_sequences/actors', KINDS),
         d = os.path.join(SRC, rel, k, 'videos')
         n += sum(place(f'{rel}/{k}/videos/{v}') for v in sorted(os.listdir(d)))
 print(f'dfd: {n} file')
+
+# DFD chia theo diễn viên (temporal.dfd_part, seed 0) bổ sung vào train / test; video giả ghép
+# mặt giữa diễn viên train và test chỉ nằm trong dfd (tránh rò rỉ danh tính)
+from temporal import dfd_part   # noqa: E402
+count = {}
+for rel, sub in [('original_sequences/actors', KINDS),
+                 ('manipulated_sequences/DeepFakeDetection', KINDS + ['masks'])]:
+    for v in sorted(os.listdir(os.path.join(SRC, rel, 'c23', 'videos'))):
+        split = dfd_part(v[:-4])
+        if split is None:
+            continue
+        assert all(place(f'{rel}/{k}/videos/{v}') for k in sub), v
+        count[split, rel.split('/')[1]] = count.get((split, rel.split('/')[1]), 0) + 1
+for (split, group), c in sorted(count.items()):
+    print(f'DFD → {split}: {group} {c} video')
