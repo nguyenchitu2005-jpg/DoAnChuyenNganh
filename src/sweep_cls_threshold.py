@@ -17,7 +17,8 @@ from tqdm import tqdm
 
 from evaluate import eval_loader, load_checkpoint
 
-SETS = [('val', 'c23'), ('val', 'c40'), ('test', 'c23'), ('test', 'c40'), ('dfd', 'c23')]
+SETS = [('val', 'c23'), ('val', 'c40'), ('test', 'c23'), ('test', 'c40'), ('dfd', 'c23'),
+        ('dfd', 'c40')]
 THRESHOLDS = np.round(np.arange(0.05, 0.951, 0.05), 2)
 
 

@@ -11,7 +11,7 @@ from albumentations.pytorch import ToTensorV2
 from torch.utils.data import Dataset, WeightedRandomSampler
 
 METHODS = ['original', 'Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures',
-           'DFD', 'actors', 'SBI']
+           'DFD', 'actors', 'SBI', 'CelebDF']   # CelebDF: chỉ để thử chéo (src/eval_celebdf.py)
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
 MASK_THRESHOLD = 127  # mask đã nhị phân 0/255 lúc tiền xử lý
@@ -161,7 +161,9 @@ class FaceSegDataset(Dataset):
         root = self.roots[self.src[i]]
         image = cv2.imread(os.path.join(root, frame), cv2.IMREAD_COLOR)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        if label:
+        if label and not mask_path:   # bộ thử chéo không có mask (Celeb-DF): chỉ đo phân loại
+            mask = np.zeros(image.shape[:2], np.uint8)
+        elif label:
             mask = cv2.imread(os.path.join(root, mask_path),
                               cv2.IMREAD_GRAYSCALE)
             mask = (mask > MASK_THRESHOLD).astype(np.uint8)

@@ -3,8 +3,9 @@
 Chạy: python src/demo.py   rồi mở http://127.0.0.1:7860
 Mỗi frame được cắt mặt giống hệt lúc train (RetinaFace, nới khung 1,3 lần, xem
 preprocess.py). Kết luận cả video = trung bình xác suất giả của đầu phân loại trên các
-frame có mặt, ngưỡng 0,5: đúng cách tính mức video của evaluate.py, nên bảng độ tin cậy
-(đọc từ runs/<mô hình>/eval_*.json) khớp với cách demo kết luận.
+frame có mặt chính diện (|yaw| < ~30°, preprocess.FRONTAL_RATIO), ngưỡng 0,5: như cách tính
+mức video của evaluate.py trên dữ liệu đã cắt theo đoạn chính diện, nên bảng độ tin cậy
+(đọc từ runs/<mô hình>/eval_*.json) gần khớp với cách demo kết luận.
 """
 import glob
 import json
@@ -29,11 +30,15 @@ SCALE = 1.3            # giống lúc tiền xử lý dữ liệu train
 SMOOTH = 5             # số frame lấy trung bình xác suất
 COLOR = (36, 36, 220)  # BGR, đỏ: phủ bán trong suốt (alpha 0,5) lên vùng dự đoán
 CLASS_NAMES = ['Thật', 'Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures']
-DEFAULT_RUN = 'b1_mix'   # phân loại tốt nhất trên test (results/cls.json)
+DEFAULT_RUN = 'b1_dfd'   # phương án B: FF++ + DFD train, tốt nhất trên DFD test (results/cls.json)
 FF = 'data/FaceForensics'
 EXAMPLES = [p for p in [f'{FF}/original_sequences/youtube/c23/videos/953.mp4'] + [
     f'{FF}/manipulated_sequences/{m}/c23/videos/953_974.mp4'
-    for m in CLASS_NAMES[1:]] if os.path.isfile(p)]   # video thuộc tập test, mô hình chưa thấy
+    for m in CLASS_NAMES[1:]] + [   # DFD: diễn viên 02, 07 thuộc nhóm test (temporal.dfd_part)
+    f'{FF}/original_sequences/actors/c23/videos/02__kitchen_pan.mp4',
+    f'{FF}/manipulated_sequences/DeepFakeDetection/c23/videos/02_07__kitchen_pan__34PVT42V.mp4']
+    if os.path.isfile(p)]   # video thuộc tập test, mô hình chưa thấy
+EXAMPLE_NAMES = {'youtube': 'Thật', 'actors': 'DFD thật', 'DeepFakeDetection': 'DFD giả'}
 
 
 def list_models():
@@ -86,9 +91,15 @@ def read_video(path):
     return frames, fps / step
 
 
+def face_square(box, shape):
+    """Khung cắt mặt như dữ liệu train mới (clips_ff, clips_dfd): nới 1,3 lần rồi dịch vào
+    trong frame để không có dải đen."""
+    return preprocess.inside(preprocess.crop_box(box, SCALE), shape[1], shape[0])
+
+
 def paste_back(prob, box, shape):
-    """Ngược với square_crop: phóng xác suất của ảnh mặt về khung mặt trên frame gốc."""
-    l, t, side = preprocess.crop_box(box, SCALE)
+    """Ngược với face_square: phóng xác suất của ảnh mặt về khung mặt trên frame gốc."""
+    l, t, side = face_square(box, shape)
     h, w = shape[:2]
     full = np.zeros((h, w), np.float32)
     p = cv2.resize(prob, (side, side))
@@ -100,18 +111,26 @@ def paste_back(prob, box, shape):
 
 @torch.no_grad()
 def predict(crops, model, device, size):
-    """Mask xác suất (N,H,W), xác suất giả (N,) và xác suất 5 lớp (N,5) cho từng ảnh mặt."""
+    """Mask xác suất (N,H,W), xác suất giả (N,) và xác suất 5 lớp (N,5) cho từng ảnh mặt.
+    Mỗi ảnh chấm 2 lần (gốc và lật ngang) rồi lấy trung bình: b1_dfd tăng khoảng 1 điểm acc
+    cân bằng trên FF++, DFD, Celeb-DF (runs/b1_dfd/tta_median.csv)."""
     tf = eval_transform(size)
     masks, fake, cls = [], [], []
     for k in range(0, len(crops), 32):
         x = torch.stack([tf(image=cv2.cvtColor(c, cv2.COLOR_BGR2RGB))['image']
                          for c in crops[k:k + 32]]).to(device)
-        with torch.autocast(device.type, dtype=torch.float16,
-                            enabled=device.type == 'cuda'):
-            seg, b, c = model(x, with_cls=True)
-        masks.append(torch.sigmoid(seg.float())[:, 0].cpu().numpy())
-        fake.append(torch.sigmoid(b.float()).cpu().numpy())
-        cls.append(torch.softmax(c.float(), 1).cpu().numpy())
+        seg_p = b_p = c_p = 0
+        for flip in (False, True):
+            with torch.autocast(device.type, dtype=torch.float16,
+                                enabled=device.type == 'cuda'):
+                seg, b, c = model(torch.flip(x, dims=[3]) if flip else x, with_cls=True)
+            seg = torch.sigmoid(seg.float())[:, 0]
+            seg_p = seg_p + (torch.flip(seg, dims=[2]) if flip else seg) / 2   # lật mask về chỗ cũ
+            b_p = b_p + torch.sigmoid(b.float()) / 2
+            c_p = c_p + torch.softmax(c.float(), 1) / 2
+        masks.append(seg_p.cpu().numpy())
+        fake.append(b_p.cpu().numpy())
+        cls.append(c_p.cpu().numpy())
     return np.concatenate(masks), np.concatenate(fake), np.concatenate(cls)
 
 
@@ -126,20 +145,35 @@ def run(video, model_label, cascade, progress=gr.Progress()):
     if not frames:
         raise gr.Error('Không đọc được video.')
     progress(0.15, desc='Phát hiện khuôn mặt')
-    boxes = []
+    boxes, ratio = [], []
     for k in range(0, len(frames), 32):
         # video thường chỉ có một người: lấy mặt lớn nhất như với video thật lúc train
-        boxes += [preprocess.pick_face(b, None)
-                  for b in preprocess.detect_faces(frames[k:k + 32])]
+        for faces in preprocess.detect_faces(frames[k:k + 32], with_kps=True):
+            if faces:
+                b, p = max(faces, key=lambda t: (t[0][2] - t[0][0]) * (t[0][3] - t[0][1]))
+                boxes.append(b)
+                ratio.append(preprocess.yaw_ratio(p))
+            else:
+                boxes.append(None)
+                ratio.append(np.inf)
     found = [i for i, b in enumerate(boxes) if b is not None]
     if not found:
         raise gr.Error('Không tìm thấy khuôn mặt nào trong video.')
+    # Chỉ khung mặt chính diện (|yaw| < ~30°, cùng ngưỡng lọc DFD lúc train) được tính vào kết
+    # luận và chọn làm khung tiêu biểu: mặt nghiêng, quay lưng (RetinaFace có thể nhận nhầm
+    # gáy là mặt) cho xác suất không đáng tin. Không khung nào đạt thì lấy khung ít nghiêng nhất.
+    r = np.array([ratio[i] for i in found])
+    frontal = r < preprocess.FRONTAL_RATIO
+    if not frontal.any():
+        frontal = r == r.min()
     progress(0.45, desc='Mô hình dự đoán')
-    crops = [preprocess.square_crop(frames[i], boxes[i], SCALE, size, None) for i in found]
+    crops = [preprocess.cut_square(frames[i], face_square(boxes[i], frames[i].shape), size, None)
+             for i in found]
     masks, fake, cls = predict(crops, model, device, size)
     # kết luận dùng xác suất gốc (như evaluate.py); hiển thị dùng bản làm trơn 5 frame
     # để giảm nhấp nháy giữa các frame liền kề
-    video_fake = float(fake.mean())
+    video_fake = float(fake[frontal].mean())
+    is_fake = video_fake >= 0.5
     masks_s = uniform_filter1d(masks, SMOOTH, axis=0, mode='nearest')
     fake_s = uniform_filter1d(fake, SMOOTH, mode='nearest')
 
@@ -155,11 +189,13 @@ def run(video, model_label, cascade, progress=gr.Progress()):
         if i in idx:
             k = idx[i]
             fake_t[i] = fake_s[k]
-            # nối tầng: frame bị phân loại là thật thì không tô vùng nào
-            show = not cascade or fake_s[k] >= 0.5
+            # nối tầng: video kết luận thật, hoặc frame bị phân loại là thật, thì không tô;
+            # frame mặt nghiêng không được tính vào kết luận nên cũng không tô
+            show = not cascade or (is_fake and frontal[k] and fake_s[k] >= 0.5)
             area[i] = (masks_s[k] > thr).mean() if show else 0
             x1, y1, x2, y2 = boxes[i].astype(int)
-            box_color = COLOR if fake_s[k] >= 0.5 else (80, 175, 76)
+            box_color = (160, 160, 160) if not frontal[k] else \
+                COLOR if fake_s[k] >= 0.5 else (80, 175, 76)
             if show:
                 mask = paste_back(masks_s[k], boxes[i], f.shape) > thr
                 f[mask] = (0.5 * f[mask] + 0.5 * np.array(COLOR)).astype(np.uint8)
@@ -168,7 +204,8 @@ def run(video, model_label, cascade, progress=gr.Progress()):
                 cv2.drawContours(f, contours, -1, COLOR, 3)
             cv2.rectangle(f, (x1, y1), (x2, y2), box_color, 2)
             # OpenCV không vẽ được chữ có dấu
-            text = 'GIA {:.0%}'.format(fake_s[k]) if fake_s[k] >= 0.5 else \
+            text = 'mat nghieng, bo qua' if not frontal[k] else \
+                'GIA {:.0%}'.format(fake_s[k]) if fake_s[k] >= 0.5 else \
                 'THAT {:.0%}'.format(1 - fake_s[k])
             cv2.putText(f, text, (x1, max(y1 - 8, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
                         box_color, 2, cv2.LINE_AA)
@@ -188,12 +225,21 @@ def run(video, model_label, cascade, progress=gr.Progress()):
     gallery = [(panel(crops[k], masks_s[k], thr),
                 'giây {:.1f} · xác suất giả {:.0%} · vùng tô {:.0%}'.format(
                     t[found[k]], fake_s[k], area[found[k]]))
-               for k in pick_frames(fake_s)]
-    is_fake = video_fake >= 0.5
-    methods = cls.mean(0)
-    method_label = {CLASS_NAMES[j]: float(methods[j]) for j in range(len(CLASS_NAMES))}
-    stats = ('**{}** frame đã xử lý · **{}** frame có mặt · **{:.0%}** frame bị phân loại '
-             'là giả (> 0,5)').format(len(frames), len(found), float((fake >= 0.5).mean()))
+               for k in np.flatnonzero(frontal)[pick_frames(fake_s[frontal])]]
+    # Đầu 5 lớp không quyết định thật/giả (đầu nhị phân làm việc đó) và chưa học video giả
+    # ngoài 4 kiểu FF++ (vd DFD: train.py bỏ loss 5 lớp của chúng), nên có thể nói "Thật" cho
+    # video đã kết luận giả. Chỉ hiện khi kết luận giả, và chỉ so giữa 4 kiểu giả mạo.
+    methods = cls[frontal].mean(0)[1:]
+    methods = methods / max(float(methods.sum()), 1e-8)
+    method_label = gr.update(
+        visible=bool(is_fake),
+        value={CLASS_NAMES[j + 1]: float(methods[j]) for j in range(len(methods))} if is_fake else None)
+    stats = ('**{}** frame đã xử lý · **{}** frame có mặt, trong đó **{}** frame mặt chính diện '
+             'được dùng để kết luận · **{:.0%}** số đó bị phân loại là giả (> 0,5)').format(
+        len(frames), len(found), int(frontal.sum()), float((fake[frontal] >= 0.5).mean()))
+    if is_fake:
+        stats += ('\n\nKiểu giả mạo bên dưới chỉ là kiểu **gần giống nhất** trong 4 kiểu của FF++; '
+                  'deepfake từ nguồn khác (vd DFD) có thể không thuộc kiểu nào trong số đó.')
     return (verdict_card(video_fake, is_fake), method_label, stats, out_path, df, gallery,
             reliability(run_name))
 
@@ -220,9 +266,18 @@ border-radius:12px;padding:16px 20px">
 def reliability(run_name):
     """Bảng độ chính xác mức video của chính mô hình này trên các tập test."""
     rows = []
+    with open(f'runs/{run_name}/config.yaml', encoding='utf-8') as fh:
+        c = yaml.safe_load(fh)   # train trên Kaggle: index_dir là /tmp/index, home_index_dir là bản ở máy
+        with_dfd = 'index_b' in c.get('home_index_dir', c.get('index_dir', ''))
+    # mô hình train có DFD: eval_dfd chỉ gồm 14 diễn viên test; mô hình cũ: eval_dfd là cả DFD,
+    # eval_dfdtest là cùng 14 diễn viên đó (src/eval_dfdtest.py) để so sánh được
+    dfd = (('DFD test (14 diễn viên chưa thấy khi train), c23', 'eval_dfd'),
+           ('DFD test (14 diễn viên chưa thấy khi train), c40', 'eval_dfd_c40')) if with_dfd else (
+          ('DFD toàn bộ, deepfake nguồn khác', 'eval_dfd'),
+          ('DFD test (14 diễn viên), c23', 'eval_dfdtest'),
+          ('DFD test (14 diễn viên), c40', 'eval_dfdtest_c40'))
     for name, f in (('FF++ test, nén nhẹ (c23)', 'eval_test'),
-                    ('FF++ test, nén mạnh (c40)', 'eval_test_c40'),
-                    ('DFD, deepfake nguồn khác', 'eval_dfd')):
+                    ('FF++ test, nén mạnh (c40)', 'eval_test_c40'), *dfd):
         try:
             with open(f'runs/{run_name}/{f}.json', encoding='utf-8') as fh:
                 c = json.load(fh)['metrics']['cls']['video']
@@ -239,9 +294,11 @@ def reliability(run_name):
         '| Tập kiểm tra | Nhận đúng video thật | Nhận đúng video giả | Accuracy cân bằng '
         '| Accuracy thường |',
         '| --- | --- | --- | --- | --- |', *rows, '',
-        'Mô hình học từ FF++ (video tin tức, 4 kiểu ghép/sửa mặt). Video do AI tạo trọn '
-        'vẹn, filter làm đẹp, video điện thoại/webcam hoặc deepfake từ công cụ khác có thể '
-        'bị bỏ sót hoặc kết luận sai (xem dòng DFD).'])
+        ('Mô hình học từ FF++ (video tin tức, 4 kiểu ghép/sửa mặt) và một phần DFD (video '
+         'diễn viên quay, ghép mặt). ' if with_dfd else
+         'Mô hình học từ FF++ (video tin tức, 4 kiểu ghép/sửa mặt). ') +
+        'Video do AI tạo trọn vẹn, filter làm đẹp hoặc deepfake từ công cụ khác có thể '
+        'bị bỏ sót hoặc kết luận sai (xem các dòng DFD).'])
 
 
 def pick_frames(score, n=6):
@@ -279,10 +336,10 @@ with gr.Blocks(title='Phát hiện video giả mạo khuôn mặt') as app:
             if EXAMPLES:
                 gr.Examples([[p] for p in EXAMPLES], [video_in],
                             label='Video mẫu (tập test FF++: thật, Deepfakes, Face2Face, '
-                                  'FaceSwap, NeuralTextures)',
-                            example_labels=[os.path.basename(os.path.dirname(
-                                os.path.dirname(os.path.dirname(p)))).replace(
-                                'youtube', 'Thật') for p in EXAMPLES])
+                                  'FaceSwap, NeuralTextures; DFD test: thật, giả)',
+                            example_labels=[(lambda g: EXAMPLE_NAMES.get(g, g))(
+                                os.path.basename(os.path.dirname(os.path.dirname(
+                                    os.path.dirname(p))))) for p in EXAMPLES])
             model_in = gr.Dropdown(list(MODELS), value=next(iter(MODELS), None),
                                    label='Mô hình')
             cascade_in = gr.Checkbox(True, label='Nối tầng: chỉ tô vùng giả ở frame bị '
@@ -292,11 +349,12 @@ with gr.Blocks(title='Phát hiện video giả mạo khuôn mặt') as app:
             verdict_out = gr.HTML('<div style="padding:16px;opacity:.6">Kết luận sẽ hiện '
                                   'ở đây sau khi phân tích.</div>')
             stats_out = gr.Markdown()
-            method_out = gr.Label(label='Kiểu giả mạo dự đoán (trung bình các frame)',
-                                  num_top_classes=5)
+            method_out = gr.Label(label='Gần giống kiểu giả mạo nào nhất (4 kiểu của FF++, '
+                                        'trung bình các frame)', num_top_classes=4,
+                                  visible=False)
     with gr.Tabs():
         with gr.Tab('Video kết quả'):
-            video_out = gr.Video(label='Khung xanh = frame thật, khung đỏ = frame giả, '
+            video_out = gr.Video(label='Khung xanh = frame thật, khung đỏ = frame giả, khung xám = mặt nghiêng (bỏ qua), '
                                        'vùng phủ đỏ = vùng bị chỉnh sửa')
         with gr.Tab('Theo thời gian'):
             plot_out = gr.LinePlot(x='Thời gian (giây)', y='Giá trị (%)', color='Chỉ số',
