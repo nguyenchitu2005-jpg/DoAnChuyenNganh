@@ -11,7 +11,8 @@ from albumentations.pytorch import ToTensorV2
 from torch.utils.data import Dataset, WeightedRandomSampler
 
 METHODS = ['original', 'Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures',
-           'DFD', 'actors', 'SBI', 'CelebDF']   # CelebDF: chỉ để thử chéo (src/eval_celebdf.py)
+           'DFD', 'actors', 'SBI', 'CelebDF', 'FaceShifter']
+# CelebDF, FaceShifter: chỉ để thử chéo (src/eval_celebdf.py, src/eval_faceshifter.py)
 MEAN = (0.485, 0.456, 0.406)
 STD = (0.229, 0.224, 0.225)
 MASK_THRESHOLD = 127  # mask đã nhị phân 0/255 lúc tiền xử lý
@@ -176,15 +177,20 @@ class FaceSegDataset(Dataset):
         return out['image'], out['mask'][None].float(), label, method
 
 
-def balanced_sampler(dataset, num_samples=None, seed=0):
+def balanced_sampler(dataset, num_samples=None, seed=0, method_weights=None):
     """Lấy mẫu có hoàn lại để mỗi batch có trung bình 50% frame thật, 50% giả.
 
     Frame thật (khoảng 20% dữ liệu) được lặp lại khoảng 4 lần mỗi epoch.
+    `method_weights` (vd {'NeuralTextures': 2}): trong nửa giả, frame của kiểu đó được lấy
+    nhiều gấp ngần ấy lần so với các kiểu khác (mặc định 1); tỉ lệ thật/giả vẫn 50/50.
     """
     labels = torch.tensor(dataset.labels())
-    n_fake = int(labels.sum())
-    n_real = len(labels) - n_fake
-    weights = torch.where(labels == 1, 0.5 / n_fake, 0.5 / n_real).double()
+    n_real = int((labels == 0).sum())
+    fake_w = torch.ones(len(labels), dtype=torch.double)
+    for name, w in (method_weights or {}).items():
+        fake_w[torch.tensor([r[2] == METHODS.index(name) for r in dataset.rows])] = w
+    fake_w = torch.where(labels == 1, fake_w, 0)
+    weights = torch.where(labels == 1, 0.5 * fake_w / fake_w.sum(), 0.5 / n_real)
     return WeightedRandomSampler(weights, num_samples or len(labels),
                                  replacement=True,
                                  generator=torch.Generator().manual_seed(seed))

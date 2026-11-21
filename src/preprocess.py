@@ -56,7 +56,8 @@ GROUPS = [
     ('manipulated_sequences/' + m, True)
     for m in ['Deepfakes', 'Face2Face', 'FaceSwap', 'NeuralTextures',
               'DeepFakeDetection']
-] + [('celebdf/real', False), ('celebdf/fake', False)]   # thử chéo, không có mask (eval_celebdf.py)
+] + [('celebdf/real', False), ('celebdf/fake', False),   # thử chéo, không có mask
+      ('manipulated_sequences/FaceShifter', False)]   # (eval_celebdf.py, eval_faceshifter.py)
 
 _detector = None
 

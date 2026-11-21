@@ -45,7 +45,7 @@ def load_config(args):
     cfg.setdefault('home_data_root', cfg['data_root'])
     cfg.setdefault('home_index_dir', cfg['index_dir'])
     for key in ('epochs', 'batch_size', 'lr', 'name', 'data_root', 'index_dir',
-                'num_workers'):
+                'num_workers', 'init'):
         if getattr(args, key) is not None:
             cfg[key] = getattr(args, key)
     cfg['fraction'] = args.fraction
@@ -74,6 +74,8 @@ def main():
     parser.add_argument('--index-dir', dest='index_dir')
     parser.add_argument('--num-workers', dest='num_workers', type=int)
     parser.add_argument('--runs-dir', default='runs')
+    parser.add_argument('--init', help='Checkpoint khởi tạo để fine-tune (thay cho `init` trong config, '
+                        'vd đường dẫn trong /kaggle/input).')
     parser.add_argument('--resume', action='store_true',
                         help='Train tiếp từ epoch cuối đã xong (last.pt của run cùng tên).')
     parser.add_argument('--max-hours', dest='max_hours', type=float,
@@ -96,8 +98,8 @@ def main():
     per_epoch = cfg.get('samples_per_epoch')
     if per_epoch:   # chạy thử với --fraction thì epoch cũng ngắn theo
         per_epoch = max(1, round(per_epoch * cfg['fraction']))
-    sampler = balanced_sampler(train_ds, per_epoch,
-                               seed=cfg['seed'])
+    sampler = balanced_sampler(train_ds, per_epoch, seed=cfg['seed'],
+                               method_weights=cfg.get('method_weights'))
     train_loader = DataLoader(train_ds, batch_size=cfg['batch_size'],
                               sampler=sampler, num_workers=cfg['num_workers'],
                               pin_memory=True, drop_last=True,
